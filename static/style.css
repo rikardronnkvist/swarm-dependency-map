@@ -1,0 +1,37 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+body { margin: 0 auto; max-width: 1600px; padding: 1.5rem; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+h1 { font-size: clamp(1.5rem, 4vw, 2.3rem); }
+h2 { margin-top: 2rem; }
+p { line-height: 1.6; }
+button, input { font: inherit; color: inherit; background: #1e293b; border: 1px solid #64748b; border-radius: 5px; padding: .5rem .75rem; }
+button { cursor: pointer; }
+button:disabled { cursor: wait; opacity: .5; }
+button:hover, button:focus-visible { border-color: #38bdf8; }
+input { display: block; margin-top: .5rem; width: min(90%, 32rem); }
+#error { color: #fecaca; border: 1px solid #f87171; padding: 1rem; }
+#graph, .table-wrap { overflow: auto; border: 1px solid #334155; border-radius: 8px; }
+#graph { max-height: 70vh; }
+.category { fill: #172033; stroke: #334155; }
+.category-title { fill: #94a3b8; font-size: 14px; }
+.edge { fill: none; stroke: #64748b; opacity: .45; stroke-width: 1.5; }
+.edge.active { stroke: #38bdf8; stroke-width: 2.5; opacity: 1; }
+.node { cursor: pointer; }
+.node rect { fill: #1e293b; stroke: #64748b; stroke-width: 2; }
+.node text { fill: #e2e8f0; font-size: 13px; }
+.node.external rect { stroke-dasharray: 5 3; }
+.node.missing rect { stroke: #fbbf24; stroke-dasharray: 3 3; }
+.node.selected rect, .node:focus-visible rect { stroke: #38bdf8; stroke-width: 3; }
+.node.dependent rect { fill: #7f1d1d; stroke: #f87171; }
+.node.dependency rect { fill: #134e4a; stroke: #2dd4bf; }
+.node.dimmed { opacity: .25; }
+.legend.dependent { color: #fca5a5; }
+.legend.dependency { color: #5eead4; }
+#details { background: #172033; border-radius: 8px; padding: .1rem 1rem 1rem; margin-top: 1rem; overflow-wrap: anywhere; }
+dt { font-weight: bold; margin-top: .75rem; }
+dd { margin: .25rem 0; }
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
+th, td { padding: .75rem; border-bottom: 1px solid #334155; vertical-align: top; overflow-wrap: anywhere; }
+th { background: #1e293b; }
+tr.selected { background: #164e63; }
+li { margin-bottom: .5rem; overflow-wrap: anywhere; }

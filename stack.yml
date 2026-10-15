@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  dependency-map:
+    image: ${DEPENDENCY_MAP_IMAGE:-swarm-dependency-map:latest}
+    user: "10001:${DOCKER_GID:-0}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    labels:
+      doc.category: infrastructure
+      doc.depends_on: ""
