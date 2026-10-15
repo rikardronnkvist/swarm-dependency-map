@@ -20,6 +20,20 @@ def service(name, labels=None, container_labels=None):
 
 
 class GraphTests(unittest.TestCase):
+    def test_multiple_categories(self):
+        graph = app.build_graph([
+            service("multi", {"doc.category": " apps, infra,apps, , ", "doc.depends_on": "ext:internet,missing"}),
+            service("blank", {"doc.category": " , ", "doc.depends_on": ""}),
+            service("default", {"doc.depends_on": ""}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["multi"]["categories"], ["apps", "infra"])
+        self.assertEqual(nodes["multi"]["category"], " apps, infra,apps, , ")
+        self.assertEqual(nodes["blank"]["categories"], ["uncategorized"])
+        self.assertEqual(nodes["default"]["categories"], ["uncategorized"])
+        self.assertEqual(nodes["ext:internet"]["categories"], ["external"])
+        self.assertEqual(nodes["missing"]["categories"], ["missing"])
+
     def test_dependencies_and_transitive_impact(self):
         graph = app.build_graph([
             service("media_radarr", {

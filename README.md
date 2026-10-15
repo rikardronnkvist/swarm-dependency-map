@@ -21,7 +21,12 @@ services:
 Use full Swarm service names (`stack_service`) in `doc.depends_on`. Whitespace
 and duplicate dependencies are ignored. Use `ext:` for dependencies outside
 the swarm, and `doc.depends_on: ""` to explicitly declare no dependencies.
-`doc.category` defaults to `uncategorized`.
+`doc.category` accepts comma-separated categories, for example `"apps,infra"`.
+Whitespace, duplicates, and empty entries are ignored; missing or empty categories
+default to `uncategorized`. Each category gets its own node badge and dropdown
+entry; badges run horizontally from right to left and wrap to additional rows
+when needed. A service appears under every assigned category. The JSON API exposes the
+normalized `categories` array and retains the original `category` string.
 
 Both service labels (`deploy.labels`) and container labels (`labels`) are read;
 service labels take precedence when the same key appears in both places.
@@ -70,16 +75,31 @@ published port before exposing it beyond your trusted network.
 
 ## Interface and analysis
 
-- Category-grouped dependency diagram, including external and missing targets.
-- Search by service, category, or dependency; click a node or table entry for details.
-- Direct dependents, additional transitive dependents, and total explicit impact.
+- Force-directed dependency diagram: linked nodes attract, other nodes repel,
+  and collision avoidance separates cards. Disconnected components have separate
+  centers and spacing, keeping small dependency chains out of larger clusters.
+  Each node has a small category badge,
+  including external and missing targets. Drag nodes to rearrange, scroll to zoom,
+  and drag the background to pan. Nodes can be dragged beyond the initial diagram
+  bounds; forces resume when released. Selection and search preserve the layout.
+- Search by service, category, or dependency; click a node to highlight its
+  dependencies and affected services.
+- **Show non-dependant**, below the diagram, is unchecked by default. Enable it
+  to include standalone services with neither incoming nor outgoing explicit
+  dependencies. Services that others depend on remain visible.
+- Search and the **Category** dropdown are below the diagram. Selecting a category
+  shows only nodes in that category and edges between them; the standalone-service
+  checkbox still applies. Changing category rebuilds the layout and resets zoom
+  and pan. **All categories** restores the unfiltered category view.
+- Direct dependents, additional transitive dependents, and total explicit impact
+  are available in the JSON API.
   Cycles terminate safely; a target is not counted as its own impacted service.
-- Separate direct Traefik/Authentik counts: `traefik.enable=true` implies a
+- Separate direct Traefik/Authentik counts in the JSON API: `traefik.enable=true` implies a
   dependency on `traefik_traefik` (except for Traefik itself). Traefik middleware
   label values containing `authentik` imply a dependency on `authentik_server`.
   These derived relationships are not drawn or included in transitive impact,
   and their counts can overlap explicit relationships.
-- Warnings for missing `doc.depends_on`, self-dependencies, and unknown service
+- Warnings in the JSON API for missing `doc.depends_on`, self-dependencies, and unknown service
   targets. An explicitly empty dependency label produces no warning.
 - **Refresh** re-reads the current service specifications without restarting.
   If discovery fails, the UI marks the last successful snapshot as stale.

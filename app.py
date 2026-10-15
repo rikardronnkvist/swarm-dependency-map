@@ -120,12 +120,16 @@ def build_graph(services):
         kind = "service" if name in labels else (
             "external" if name.startswith("ext:") else "missing"
         )
+        category = labels[name].get("doc.category", "uncategorized") if name in labels else kind
+        categories = sorted({value.strip() for value in category.split(",") if value.strip()})
+        if not categories:
+            categories = ["uncategorized"]
         nodes.append({
             "id": name,
             "name": short_name(name, labels),
             "kind": kind,
-            "category": labels[name].get("doc.category", "uncategorized")
-            if name in labels else kind,
+            "category": category,
+            "categories": categories,
             "depends_on": dependencies.get(name, []),
             "used_by": sorted(direct),
             "transitive_impact": sorted(affected - direct),
