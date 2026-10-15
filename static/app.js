@@ -27,16 +27,28 @@ function renderGraph() {
   stopLayout();
   const root = document.getElementById("graph");
   root.replaceChildren();
-  // Only explicit relationships belong in the diagram.
-  const explicitTargets = new Set(graph.edges.map(edge => edge.target));
+  // Hosting links are optional and never change explicit dependency impact.
   const connectedIds = new Set(graph.edges.flatMap(edge => [edge.source, edge.target]));
   const showNonDependant = document.getElementById("show-non-dependant").checked;
   const category = document.getElementById("category").value;
+  const showSwarm = document.getElementById("show-swarm-nodes").checked;
+  const swarmNode = showSwarm ? document.getElementById("swarm-node").value : "";
+  const hostedServices = new Set((graph.placement_edges || [])
+    .filter(edge => edge.target === swarmNode).map(edge => edge.source));
   const nodes = graph.nodes
-    .filter(node => node.kind === "service" || explicitTargets.has(node.id))
+    .filter(node => node.kind === "service" || connectedIds.has(node.id))
     .filter(node => showNonDependant || connectedIds.has(node.id))
     .filter(node => !category || node.categories.includes(category))
+    .filter(node => !swarmNode || hostedServices.has(node.id))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  const serviceIds = new Set(nodes.map(node => node.id));
+  const placements = showSwarm
+    ? (graph.placement_edges || []).filter(edge => serviceIds.has(edge.source)) : [];
+  const hostIds = new Set(placements.map(edge => edge.target));
+  if (showSwarm) {
+    nodes.push(...(graph.swarm_nodes || []).filter(node =>
+      swarmNode ? node.id === swarmNode || hostIds.has(node.id) : !category || hostIds.has(node.id)));
+  }
   if (!nodes.length) {
     root.append(element("p", graph.service_count
       ? "No services match these filters. Enable Show non-dependant or choose another category."
@@ -63,7 +75,10 @@ function renderGraph() {
   const nodeHeight = Math.max(...[...categoryBadges.values()].map(badges =>
     badges[badges.length - 1].y + 29));
   const visibleIds = new Set(nodes.map(node => node.id));
-  const edges = graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const edges = [
+    ...graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    ...placements.map(edge => ({...edge, kind: "placement"})),
+  ];
   const neighbors = new Map(nodes.map(node => [node.id, []]));
   for (const edge of edges) {
     neighbors.get(edge.source).push(edge.target);
@@ -145,11 +160,15 @@ function renderGraph() {
     const from = positions.get(edge.source);
     const to = positions.get(edge.target);
     const path = svgElement("path", {
-      class: "edge", "marker-end": "url(#arrow)",
+      class: edge.kind === "placement"
+        ? `edge placement${swarmNode && edge.target !== swarmNode ? " secondary" : ""}` : "edge",
+      ...(edge.kind === "placement" ? {} : {"marker-end": "url(#arrow)"}),
       "data-source": edge.source, "data-target": edge.target,
     });
     const title = svgElement("title");
-    title.textContent = `${edge.source} → ${edge.target}`;
+    title.textContent = edge.kind === "placement"
+      ? `${edge.source} runs on ${byId.get(edge.target).name}`
+      : `${edge.source} → ${edge.target}`;
     path.append(title);
     svg.append(path);
     links.push({from, to, path});
@@ -158,7 +177,8 @@ function renderGraph() {
   for (const node of nodes) {
     const position = positions.get(node.id);
     const group = svgElement("g", {
-      class: `node ${node.kind}`, tabindex: 0, role: "button",
+      class: `node ${node.kind}${node.kind === "swarm" && swarmNode && node.id !== swarmNode ? " secondary" : ""}`,
+      tabindex: 0, role: "button",
       "data-id": node.id, "aria-label": node.id, "aria-pressed": "false",
     });
     group.append(svgElement("rect", {
@@ -178,7 +198,9 @@ function renderGraph() {
       group.append(badge, category);
     }
     const title = svgElement("title");
-    title.textContent = `${node.id} (${node.category}, ${node.kind})`;
+    title.textContent = node.kind === "swarm"
+      ? `${node.name} (${node.role}, ${node.state}, ${node.availability})`
+      : `${node.id} (${node.category}, ${node.kind})`;
     group.append(title);
     let drag = null;
     let dragged = false;
@@ -413,12 +435,20 @@ function render() {
   const query = document.getElementById("search").value.toLowerCase().trim();
   const current = byId.get(selected);
   const affected = new Set(current ? [...current.used_by, ...current.transitive_impact] : []);
+  const hosted = new Set();
+  if (document.getElementById("show-swarm-nodes").checked) {
+    for (const edge of graph.placement_edges || []) {
+      if (edge.source === selected) hosted.add(edge.target);
+      if (edge.target === selected) hosted.add(edge.source);
+    }
+  }
   for (const group of document.querySelectorAll("#graph .node")) {
     const node = byId.get(group.dataset.id);
     group.classList.toggle("selected", node.id === selected);
     group.classList.toggle("dependent", node.id !== selected && affected.has(node.id));
     group.classList.toggle("dependency", node.id !== selected && !affected.has(node.id) && Boolean(current?.depends_on.includes(node.id)));
     group.classList.toggle("dimmed", !matches(node, query));
+    group.classList.toggle("hosted", node.id !== selected && hosted.has(node.id));
     group.setAttribute("aria-pressed", String(node.id === selected));
   }
   for (const edge of document.querySelectorAll("#graph .edge")) {
@@ -428,16 +458,32 @@ function render() {
 
 async function refresh() {
   const button = document.getElementById("refresh");
+  const swarmCheckbox = document.getElementById("show-swarm-nodes");
+  const swarmFilter = document.getElementById("swarm-node");
   const error = document.getElementById("error");
   button.disabled = true;
+  swarmCheckbox.disabled = true;
+  swarmFilter.disabled = true;
   error.hidden = true;
   try {
-    const response = await fetch("/api/dependencies", {cache: "no-store"});
+    const url = swarmCheckbox.checked ? "/api/dependencies?include_swarm_nodes=true" : "/api/dependencies";
+    const response = await fetch(url, {cache: "no-store"});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load dependencies.");
     graph = data;
     byId.clear();
-    for (const node of graph.nodes) byId.set(node.id, node);
+    for (const node of [...graph.nodes, ...(graph.swarm_nodes || [])]) byId.set(node.id, node);
+    const previousSwarmNode = swarmFilter.value;
+    const allNodes = element("option", "All nodes");
+    allNodes.value = "";
+    swarmFilter.replaceChildren(allNodes);
+    for (const node of [...(graph.swarm_nodes || [])].sort((a, b) => a.name.localeCompare(b.name))) {
+      const option = element("option", node.name);
+      option.value = node.id;
+      swarmFilter.append(option);
+    }
+    swarmFilter.value = (graph.swarm_nodes || []).some(node => node.id === previousSwarmNode)
+      ? previousSwarmNode : "";
     const category = document.getElementById("category");
     const previousCategory = category.value;
     const categories = [...new Set(graph.nodes.flatMap(node => node.categories))].sort();
@@ -458,6 +504,8 @@ async function refresh() {
     error.hidden = false;
   } finally {
     button.disabled = false;
+    swarmCheckbox.disabled = false;
+    swarmFilter.disabled = !swarmCheckbox.checked || !graph?.swarm_nodes;
   }
 }
 
@@ -469,7 +517,16 @@ function updateFilters() {
   render();
 }
 document.getElementById("show-non-dependant").addEventListener("change", updateFilters);
+document.getElementById("show-swarm-nodes").addEventListener("change", () => {
+  stopLayout();
+  positions.clear();
+  refresh();
+});
 document.getElementById("category").addEventListener("change", () => {
+  positions.clear();
+  updateFilters();
+});
+document.getElementById("swarm-node").addEventListener("change", () => {
   positions.clear();
   updateFilters();
 });

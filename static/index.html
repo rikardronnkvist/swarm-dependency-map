@@ -8,22 +8,26 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header>
-    <h1>Swarm dependency map</h1>
-    <button id="refresh" type="button">Refresh</button>
-  </header>
   <main>
+    <button id="refresh" type="button">Refresh</button>
     <p id="error" role="alert" hidden></p>
     <div id="graph" aria-label="Service dependency graph"></div>
-    <label class="graph-option"><input id="show-non-dependant" type="checkbox"> Show non-dependant</label>
-    <div class="graph-filter">
-      <label for="search">Filter by service, category, or dependency</label>
-      <input id="search" type="search" placeholder="Search services">
-    </div>
-    <div class="graph-filter">
-      <label for="category">Category</label>
-      <select id="category"><option value="">All categories</option></select>
-    </div>
+    <section class="graph-controls" aria-label="Diagram filters">
+      <label class="graph-option"><input id="show-non-dependant" type="checkbox"> Show non-dependant</label>
+      <label class="graph-option"><input id="show-swarm-nodes" type="checkbox"> Show Swarm nodes</label>
+      <div class="graph-filter">
+        <label for="swarm-node">Swarm node</label>
+        <select id="swarm-node" disabled><option value="">All nodes</option></select>
+      </div>
+      <div class="graph-filter">
+        <label for="category">Category</label>
+        <select id="category"><option value="">All categories</option></select>
+      </div>
+      <div class="graph-filter">
+        <label for="search">Filter</label>
+        <input id="search" type="search" placeholder="Search services">
+      </div>
+    </section>
   </main>
 </body>
 </html>

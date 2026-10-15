@@ -20,6 +20,94 @@ def service(name, labels=None, container_labels=None):
 
 
 class GraphTests(unittest.TestCase):
+    def test_used_by_merges_reverse_dependencies_and_external_impact(self):
+        graph = app.build_graph([
+            service("db", {"doc.depends_on": "", "doc.used_by": " web,ext:homeassistant,web, , "}),
+            service("web", {"doc.depends_on": "db", "doc.used_by": "ext:homeassistant"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(graph["edges"], [
+            {"source": "ext:homeassistant", "target": "db"},
+            {"source": "ext:homeassistant", "target": "web"},
+            {"source": "web", "target": "db"},
+        ])
+        self.assertEqual(nodes["ext:homeassistant"]["kind"], "external")
+        self.assertEqual(nodes["ext:homeassistant"]["depends_on"], ["db", "web"])
+        self.assertEqual(nodes["db"]["used_by"], ["ext:homeassistant", "web"])
+        self.assertEqual(nodes["db"]["impact_count"], 2)
+        self.assertEqual(graph["service_count"], 2)
+        self.assertEqual(graph["warnings"], [])
+
+    def test_used_by_transitive_cycles_missing_and_label_precedence(self):
+        graph = app.build_graph([
+            service("db", {"doc.depends_on": "", "doc.used_by": "web"}),
+            service("web", {"doc.depends_on": "", "doc.used_by": "ext:homeassistant"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["db"]["transitive_impact"], ["ext:homeassistant"])
+        graph = app.build_graph([
+            service("a", {"doc.depends_on": "", "doc.used_by": "b,a,missing"}),
+            service("b", {"doc.depends_on": "", "doc.used_by": "a"},
+                    {"doc.used_by": "ext:ignored"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["a"]["impact_count"], 2)
+        self.assertEqual(nodes["a"]["used_by"], ["b", "missing"])
+        self.assertEqual(nodes["missing"]["kind"], "missing")
+        self.assertNotIn("ext:ignored", nodes)
+        self.assertEqual(graph["warnings"], [
+            "a depends on itself",
+            "a is used by missing, which is not a running service",
+        ])
+
+    def test_used_by_container_label_and_empty_value(self):
+        graph = app.build_graph([
+            service("a", {"doc.depends_on": ""}, {"doc.used_by": "ext:homeassistant"}),
+            service("b", {"doc.depends_on": "", "doc.used_by": ""},
+                    {"doc.used_by": "ext:ignored"}),
+        ])
+        self.assertEqual(graph["edges"], [{"source": "ext:homeassistant", "target": "a"}])
+        self.assertEqual(graph["warnings"], [])
+
+    def test_swarm_placements_use_running_tasks_and_preserve_impact(self):
+        services = [
+            {**service("web", {"doc.depends_on": "db"}), "ID": "web-id"},
+            {**service("db", {"doc.depends_on": ""}), "ID": "db-id"},
+            {**service("scaled-zero", {"doc.depends_on": ""}), "ID": "zero-id"},
+        ]
+        swarm_nodes = [{
+            "ID": node_id, "Description": {"Hostname": f"docker{index}"},
+            "Spec": {"Role": "manager" if index == 1 else "worker", "Availability": "active"},
+            "Status": {"State": "ready"},
+        } for index, node_id in enumerate(["n1", "n2", "idle"], 1)]
+        tasks = [
+            {"ServiceID": service_id, "NodeID": node_id, "Status": {"State": state}}
+            for service_id, node_id, state in [
+                ("web-id", "n1", "running"), ("web-id", "n1", "running"),
+                ("web-id", "n2", "running"), ("db-id", "n2", "running"),
+                ("zero-id", "n1", "shutdown"), ("web-id", "n2", "failed"),
+                ("web-id", "n1", "starting"), ("web-id", "gone", "running"),
+                ("removed-service", "n1", "running"),
+            ]
+        ]
+        tasks.append({"ServiceID": "web-id", "Status": {"State": "pending"}})
+        baseline = app.build_graph(services)
+        graph = app.build_graph(services, swarm_nodes, tasks)
+        for key in ("nodes", "edges", "implicit_edges", "warnings", "service_count"):
+            self.assertEqual(graph[key], baseline[key])
+        self.assertEqual(graph["placement_edges"], [
+            {"source": "db", "target": "swarm-node:n2"},
+            {"source": "web", "target": "swarm-node:n1"},
+            {"source": "web", "target": "swarm-node:n2"},
+        ])
+        self.assertEqual(len(graph["swarm_nodes"]), 3)
+        manager = next(node for node in graph["swarm_nodes"] if node["id"] == "swarm-node:n1")
+        self.assertEqual(manager["name"], "docker1")
+        self.assertEqual(manager["role"], "manager")
+        self.assertEqual(manager["kind"], "swarm")
+        self.assertNotIn("swarm_nodes", baseline)
+        self.assertEqual(app.build_graph([], [], [])["placement_edges"], [])
+
     def test_multiple_categories(self):
         graph = app.build_graph([
             service("multi", {"doc.category": " apps, infra,apps, , ", "doc.depends_on": "ext:internet,missing"}),
@@ -156,6 +244,9 @@ class DockerTests(unittest.TestCase):
                 with patch.dict(os.environ, {"DOCKER_SOCKET": path}):
                     self.assertEqual(app.read_services(), [{"Spec": {"Name": "test"}}])
                     self.assertEqual(server.request_path, "/services")
+                    for endpoint in ("/nodes", "/tasks"):
+                        self.assertEqual(app.read_docker_list(endpoint), [{"Spec": {"Name": "test"}}])
+                        self.assertEqual(server.request_path, endpoint)
                     DockerHandler.status = 503
                     with self.assertRaises(RuntimeError):
                         app.read_services()
@@ -208,12 +299,34 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.get("/../app.py")[0], 404)
 
     def test_api_refreshes_discovery(self):
-        with patch.object(app, "read_services", return_value=[]) as discovery:
+        with patch.object(app, "read_services", return_value=[]) as discovery, \
+                patch.object(app, "read_docker_list") as extra_discovery:
             for _ in range(2):
                 status, _, body = self.get("/api/dependencies")
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body)["nodes"], [])
             self.assertEqual(discovery.call_count, 2)
+            extra_discovery.assert_not_called()
+
+    def test_swarm_discovery_is_opt_in_and_refreshes(self):
+        with patch.object(app, "read_services", return_value=[]), \
+                patch.object(app, "read_docker_list", return_value=[]) as discovery:
+            for _ in range(2):
+                status, _, body = self.get("/api/dependencies?include_swarm_nodes=true")
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["swarm_nodes"], [])
+                self.assertEqual(json.loads(body)["placement_edges"], [])
+            self.assertEqual([call.args[0] for call in discovery.call_args_list],
+                             ["/nodes", "/tasks", "/nodes", "/tasks"])
+
+    def test_swarm_discovery_failure_is_explicit(self):
+        with patch.object(app, "read_services", return_value=[]), \
+                patch.object(app, "read_docker_list", side_effect=RuntimeError("private details")):
+            with self.assertLogs(level="ERROR"):
+                status, _, body = self.get("/api/dependencies?include_swarm_nodes=true")
+        self.assertEqual(status, 503)
+        self.assertIn("/nodes and /tasks", json.loads(body)["error"])
+        self.assertNotIn("private details", body.decode())
 
     def test_unavailable_docker_is_a_safe_actionable_error(self):
         with patch.object(app, "read_services", side_effect=PermissionError("private path")):

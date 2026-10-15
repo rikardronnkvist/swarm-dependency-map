@@ -21,6 +21,14 @@ services:
 Use full Swarm service names (`stack_service`) in `doc.depends_on`. Whitespace
 and duplicate dependencies are ignored. Use `ext:` for dependencies outside
 the swarm, and `doc.depends_on: ""` to explicitly declare no dependencies.
+`doc.used_by` declares the same relationship in reverse: on a service,
+`doc.used_by: "ext:homeassistant"` creates `ext:homeassistant -> service`.
+It accepts comma-separated full service names or `ext:` names, ignoring whitespace,
+empty entries, and duplicates. Relationships from both labels are merged and
+deduplicated, and both participate in direct/transitive impact analysis.
+Unknown non-`ext:` names produce missing-service warnings. An empty `doc.used_by`
+declares no reverse relationships; it does not replace `doc.depends_on: ""`.
+
 `doc.category` accepts comma-separated categories, for example `"apps,infra"`.
 Whitespace, duplicates, and empty entries are ignored; missing or empty categories
 default to `uncategorized`. Each category gets its own node badge and dropdown
@@ -30,8 +38,9 @@ normalized `categories` array and retains the original `category` string.
 
 Both service labels (`deploy.labels`) and container labels (`labels`) are read;
 service labels take precedence when the same key appears in both places.
-Discovery reads Swarm service specifications, not individual tasks, so services
-with zero replicas are included. Missing-target warnings mean a name is absent
+Dependency discovery reads Swarm service specifications, so services with zero
+replicas are included. Optional host placement reads running tasks separately.
+Missing-target warnings mean a name is absent
 from Swarm, not that its tasks are unhealthy.
 
 ## Run on a Swarm manager
@@ -66,15 +75,19 @@ must match on eligible managers, or constrain deployment to a suitable node.
 
 **Security:** Docker socket access is effectively host-administrator access,
 even when the socket is mounted `:ro`; that flag does not make the Docker API
-read-only. This application only issues `GET /services`, but deploy it only in a
-trusted environment. A restricted Docker socket proxy allowing service listing
-is preferable where available. The web UI/API have no built-in authentication
+read-only. This application only issues `GET /services` and, when **Show Swarm nodes**
+is enabled, `GET /nodes` and `GET /tasks`. Deploy it only in a trusted environment.
+A restricted Docker socket proxy allowing these read endpoints is preferable
+where available. The web UI/API have no built-in authentication
 and expose service names and topology. Keep them private or protect them with an
 authenticated reverse proxy, TLS, and firewall rules. Review the stack's
 published port before exposing it beyond your trusted network.
 
 ## Interface and analysis
 
+- The diagram fills the page, with **Refresh** in the top-right corner and all
+  filters in a single row at the bottom. On narrow screens the filter row scrolls
+  horizontally.
 - Force-directed dependency diagram: linked nodes attract, other nodes repel,
   and collision avoidance separates cards. Disconnected components have separate
   centers and spacing, keeping small dependency chains out of larger clusters.
@@ -87,6 +100,21 @@ published port before exposing it beyond your trusted network.
 - **Show non-dependant**, below the diagram, is unchecked by default. Enable it
   to include standalone services with neither incoming nor outgoing explicit
   dependencies. Services that others depend on remain visible.
+- **Show Swarm nodes** is unchecked by default. Enable it to show manager/worker
+  hosts as purple cards, with dashed purple hosting links to visible services
+  that have running tasks on them. Replicas on the same host produce one link;
+  services spanning hosts have one link per host. Stopped/pending tasks do not
+  produce links. Hover a host for its role, state, and availability; select it to
+  highlight its services. Hosting links do not affect dependency impact.
+  Category and standalone-service filters still apply to services; with a category
+  selected, only hosts running visible services are shown. Without a category,
+  all Swarm hosts are shown, including idle hosts.
+- The **Swarm node** dropdown is enabled with **Show Swarm nodes**. Select a host
+  to show only services with running tasks there. Other hosts running those same
+  services remain visible with muted cards and hosting links; unrelated services
+  on those hosts are not added.
+  Category and standalone-service filters still apply. Changing host rebuilds the
+  layout; Refresh preserves the selected host while it still exists.
 - Search and the **Category** dropdown are below the diagram. Selecting a category
   shows only nodes in that category and edges between them; the standalone-service
   checkbox still applies. Changing category rebuilds the layout and resets zoom
@@ -107,6 +135,10 @@ published port before exposing it beyond your trusted network.
 `GET /api/dependencies` returns the same snapshot as JSON. `GET /healthz` is a
 process liveness check, not a Docker connectivity/readiness check. Discovery
 failures return HTTP 503 with an actionable message; details go to server logs.
+`GET /api/dependencies?include_swarm_nodes=true` also returns `swarm_nodes` and
+`placement_edges`, populated from `/nodes` and `/tasks`. These endpoints are not
+queried in the default view. Refresh with the checkbox enabled re-reads all three
+resources. Discovery failures are explicit; no partial topology is returned.
 
 Configuration via environment variables:
 

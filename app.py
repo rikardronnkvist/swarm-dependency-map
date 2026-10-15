@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 STATIC = Path(__file__).parent / "static"
@@ -26,21 +26,25 @@ class DockerConnection(http.client.HTTPConnection):
         self.sock.connect(self.socket_path)
 
 
-def read_services():
+def read_docker_list(path):
     connection = DockerConnection(
         os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
     )
     try:
-        connection.request("GET", "/services")
+        connection.request("GET", path)
         response = connection.getresponse()
         if response.status != 200:
-            raise RuntimeError(f"Docker service discovery returned HTTP {response.status}")
-        services = json.loads(response.read())
-        if not isinstance(services, list):
-            raise ValueError("Docker returned an invalid service list")
-        return services
+            raise RuntimeError(f"Docker {path} discovery returned HTTP {response.status}")
+        items = json.loads(response.read())
+        if not isinstance(items, list):
+            raise ValueError(f"Docker returned an invalid list for {path}")
+        return items
     finally:
         connection.close()
+
+
+def read_services():
+    return read_docker_list("/services")
 
 
 def short_name(name, labels):
@@ -58,7 +62,7 @@ def short_name(name, labels):
     return f"{stack}-{service}"
 
 
-def build_graph(services):
+def build_graph(services, swarm_nodes=None, tasks=()):
     labels = {}
     for service in services:
         spec = service["Spec"]
@@ -102,6 +106,24 @@ def build_graph(services):
         for dependency in derived:
             implicit_used_by[dependency].add(name)
 
+    for name, lab in sorted(labels.items()):
+        dependents = sorted({
+            value.strip() for value in lab.get("doc.used_by", "").split(",")
+            if value.strip()
+        })
+        for dependent in dependents:
+            targets = dependencies.setdefault(dependent, [])
+            if name not in targets:
+                targets.append(name)
+                targets.sort()
+                if dependent == name:
+                    warnings.append(f"{name} depends on itself")
+            used_by[name].add(dependent)
+            if not dependent.startswith("ext:") and dependent not in labels:
+                warnings.append(
+                    f"{name} is used by {dependent}, which is not a running service"
+                )
+
     def impact(target):
         seen = {target}
         queue = deque([target])
@@ -113,7 +135,7 @@ def build_graph(services):
         return seen - {target}
 
     nodes = []
-    targets = set(labels) | set(used_by) | set(implicit_used_by)
+    targets = set(labels) | set(dependencies) | set(used_by) | set(implicit_used_by)
     for name in sorted(targets):
         direct = used_by.get(name, set()) - {name}
         affected = impact(name)
@@ -137,7 +159,7 @@ def build_graph(services):
             "implicit_used_by": sorted(implicit_used_by.get(name, ())),
         })
 
-    return {
+    graph = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "service_count": len(labels),
         "nodes": nodes,
@@ -151,6 +173,36 @@ def build_graph(services):
         ],
         "warnings": warnings,
     }
+    if swarm_nodes is not None:
+        service_names = {service["ID"]: service["Spec"]["Name"] for service in services}
+        node_ids = {node["ID"] for node in swarm_nodes}
+        placements = sorted({
+            (service_names[task["ServiceID"]], task["NodeID"])
+            for task in tasks
+            if task["Status"]["State"] == "running"
+            and task.get("ServiceID") in service_names
+            and task.get("NodeID") in node_ids
+        })
+        graph["swarm_nodes"] = [{
+            "id": f"swarm-node:{node['ID']}",
+            "name": node["Description"]["Hostname"],
+            "kind": "swarm",
+            "category": "Swarm node",
+            "categories": ["Swarm node"],
+            "role": node["Spec"]["Role"],
+            "state": node["Status"]["State"],
+            "availability": node["Spec"]["Availability"],
+            "depends_on": [],
+            "used_by": [],
+            "transitive_impact": [],
+            "implicit_used_by": [],
+            "impact_count": 0,
+        } for node in sorted(swarm_nodes, key=lambda node: node["ID"])]
+        graph["placement_edges"] = [
+            {"source": name, "target": f"swarm-node:{node_id}"}
+            for name, node_id in placements
+        ]
+    return graph
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -160,15 +212,22 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, b"ok\n", "text/plain")
         elif path == "/api/dependencies":
             try:
-                data = build_graph(read_services())
+                services = read_services()
+                include_swarm = parse_qs(urlsplit(self.path).query).get("include_swarm_nodes") == ["true"]
+                if include_swarm:
+                    data = build_graph(services, read_docker_list("/nodes"), read_docker_list("/tasks"))
+                else:
+                    data = build_graph(services)
             except (OSError, http.client.HTTPException, ValueError, KeyError,
                     TypeError, RuntimeError):
-                logging.exception("Cannot read Swarm services")
+                logging.exception("Cannot read Swarm discovery data")
                 self.respond(
                     503,
                     json.dumps({
                         "error": "Cannot read Swarm services. Check that the Docker "
-                        "socket is accessible and this application is on a Swarm manager."
+                        "socket is accessible and this application is on a Swarm manager. "
+                        "When Show Swarm nodes is enabled, access to /nodes and /tasks "
+                        "is also required."
                     }).encode(),
                     "application/json",
                 )
