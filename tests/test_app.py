@@ -20,6 +20,59 @@ def service(name, labels=None, container_labels=None):
 
 
 class GraphTests(unittest.TestCase):
+    def test_stack_dependencies_propagate_member_failure_without_counting_stack(self):
+        graph = app.build_graph([
+            service("db", {"com.docker.stack.namespace": "backend", "doc.depends_on": ""}),
+            service("cache", {"com.docker.stack.namespace": "backend", "doc.depends_on": ""}),
+            service("web", {"com.docker.stack.namespace": "frontend", "doc.depends_on": "stack:backend"}),
+            service("client", {"doc.depends_on": "web"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["stack:backend"]["kind"], "stack")
+        self.assertEqual(nodes["stack:backend"]["name"], "backend")
+        self.assertEqual(nodes["stack:backend"]["members"], ["cache", "db"])
+        self.assertEqual(nodes["stack:backend"]["used_by"], ["web"])
+        for member in ("cache", "db"):
+            self.assertEqual(nodes[member]["stack"], "backend")
+            self.assertEqual(nodes[member]["used_by"], [])
+            self.assertEqual(nodes[member]["transitive_impact"], ["client", "web"])
+            self.assertEqual(nodes[member]["impact_count"], 2)
+        self.assertEqual(graph["service_count"], 4)
+        self.assertEqual(graph["warnings"], [])
+        self.assertEqual(graph["edges"], [
+            {"source": "client", "target": "web"},
+            {"source": "web", "target": "stack:backend"},
+        ])
+
+    def test_stack_cycles_missing_and_authoritative_membership(self):
+        graph = app.build_graph([
+            service("a", {"com.docker.stack.namespace": "one", "doc.depends_on": "stack:two"}),
+            service("b", {"com.docker.stack.namespace": "two", "doc.depends_on": "stack:one"}),
+            service("looks_like_a_stack", {"doc.depends_on": "stack:unknown"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["a"]["transitive_impact"], ["b"])
+        self.assertEqual(nodes["b"]["transitive_impact"], ["a"])
+        self.assertEqual(nodes["a"]["impact_count"], 1)
+        self.assertEqual(nodes["stack:unknown"]["kind"], "missing")
+        self.assertIsNone(nodes["looks_like_a_stack"]["stack"])
+        self.assertEqual(graph["warnings"], [
+            "looks_like_a_stack depends on stack:unknown, which is not a known stack",
+        ])
+        self.assertEqual([stack["id"] for stack in graph["stacks"]], ["stack:one", "stack:two"])
+
+    def test_stack_dependencies_merge_with_used_by_and_terminate_self_cycle(self):
+        graph = app.build_graph([
+            service("a", {"com.docker.stack.namespace": "one", "doc.depends_on": "stack:one",
+                          "doc.used_by": "ext:client"}),
+            service("web", {"doc.depends_on": "stack:one,a"}),
+        ])
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        self.assertEqual(nodes["a"]["used_by"], ["ext:client", "web"])
+        self.assertEqual(nodes["a"]["impact_count"], 2)
+        self.assertEqual(nodes["a"]["transitive_impact"], [])
+        self.assertNotIn("a", nodes["a"]["used_by"])
+
     def test_used_by_merges_reverse_dependencies_and_external_impact(self):
         graph = app.build_graph([
             service("db", {"doc.depends_on": "", "doc.used_by": " web,ext:homeassistant,web, , "}),

@@ -50,6 +50,8 @@ def read_services():
 def short_name(name, labels):
     if name.startswith("ext:"):
         return name[4:]
+    if name.startswith("stack:"):
+        return name[6:]
     stack = labels.get(name, {}).get("com.docker.stack.namespace")
     if stack and name.startswith(stack + "_"):
         service = name[len(stack) + 1:]
@@ -73,6 +75,12 @@ def build_graph(services, swarm_nodes=None, tasks=()):
             **(spec.get("Labels") or {}),
         }
 
+    stacks = defaultdict(list)
+    for name, lab in labels.items():
+        stack = lab.get("com.docker.stack.namespace")
+        if stack:
+            stacks[f"stack:{stack}"].append(name)
+
     dependencies = {}
     implicit = {}
     used_by = defaultdict(set)
@@ -88,7 +96,9 @@ def build_graph(services, swarm_nodes=None, tasks=()):
             used_by[dependency].add(name)
             if dependency == name:
                 warnings.append(f"{name} depends on itself")
-            elif not dependency.startswith("ext:") and dependency not in labels:
+            elif dependency.startswith("stack:") and dependency not in stacks:
+                warnings.append(f"{name} depends on {dependency}, which is not a known stack")
+            elif not dependency.startswith("ext:") and dependency not in labels and dependency not in stacks:
                 warnings.append(
                     f"{name} depends on {dependency}, which is not a running service"
                 )
@@ -119,28 +129,33 @@ def build_graph(services, swarm_nodes=None, tasks=()):
                 if dependent == name:
                     warnings.append(f"{name} depends on itself")
             used_by[name].add(dependent)
-            if not dependent.startswith("ext:") and dependent not in labels:
+            if not dependent.startswith("ext:") and dependent not in labels and dependent not in stacks:
                 warnings.append(
                     f"{name} is used by {dependent}, which is not a running service"
                 )
+
+    impact_used_by = {name: set(dependents) for name, dependents in used_by.items()}
+    for stack, members in stacks.items():
+        for member in members:
+            impact_used_by.setdefault(member, set()).add(stack)
 
     def impact(target):
         seen = {target}
         queue = deque([target])
         while queue:
-            for dependent in used_by.get(queue.popleft(), ()):
+            for dependent in impact_used_by.get(queue.popleft(), ()):
                 if dependent not in seen:
                     seen.add(dependent)
                     queue.append(dependent)
-        return seen - {target}
+        return seen - {target} - set(stacks)
 
     nodes = []
     targets = set(labels) | set(dependencies) | set(used_by) | set(implicit_used_by)
     for name in sorted(targets):
-        direct = used_by.get(name, set()) - {name}
+        direct = used_by.get(name, set()) - {name} - set(stacks)
         affected = impact(name)
         kind = "service" if name in labels else (
-            "external" if name.startswith("ext:") else "missing"
+            "stack" if name in stacks else "external" if name.startswith("ext:") else "missing"
         )
         category = labels[name].get("doc.category", "uncategorized") if name in labels else kind
         categories = sorted({value.strip() for value in category.split(",") if value.strip()})
@@ -150,6 +165,8 @@ def build_graph(services, swarm_nodes=None, tasks=()):
             "id": name,
             "name": short_name(name, labels),
             "kind": kind,
+            "stack": labels.get(name, {}).get("com.docker.stack.namespace"),
+            "members": sorted(stacks.get(name, [])),
             "category": category,
             "categories": categories,
             "depends_on": dependencies.get(name, []),
@@ -172,6 +189,10 @@ def build_graph(services, swarm_nodes=None, tasks=()):
             for name, targets in sorted(implicit.items()) for target in targets
         ],
         "warnings": warnings,
+        "stacks": [
+            {"id": stack, "name": stack[6:], "members": sorted(members)}
+            for stack, members in sorted(stacks.items())
+        ],
     }
     if swarm_nodes is not None:
         service_names = {service["ID"]: service["Spec"]["Name"] for service in services}

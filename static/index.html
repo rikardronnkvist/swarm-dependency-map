@@ -12,6 +12,11 @@
     <button id="refresh" type="button">Refresh</button>
     <p id="error" role="alert" hidden></p>
     <div id="graph" aria-label="Service dependency graph"></div>
+    <aside id="node-info" aria-labelledby="node-info-title" hidden>
+      <button id="close-info" type="button" aria-label="Close information">Close</button>
+      <h2 id="node-info-title" class="info-color selected"></h2>
+      <div id="node-info-content"></div>
+    </aside>
     <section class="graph-controls" aria-label="Diagram filters">
       <label class="graph-option"><input id="show-non-dependant" type="checkbox"> Show non-dependant</label>
       <label class="graph-option"><input id="show-swarm-nodes" type="checkbox"> Show Swarm nodes</label>

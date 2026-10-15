@@ -21,6 +21,19 @@ services:
 Use full Swarm service names (`stack_service`) in `doc.depends_on`. Whitespace
 and duplicate dependencies are ignored. Use `ext:` for dependencies outside
 the swarm, and `doc.depends_on: ""` to explicitly declare no dependencies.
+Use `doc.depends_on: "stack:backend"` to depend on an entire stack instead of a
+particular service. Stack membership comes exclusively from
+`com.docker.stack.namespace`, not name prefixes. Arrows attach directly to the
+stack enclosure, with no synthetic service card. Referenced stacks retain an
+enclosure even with one service or when their members are filtered out.
+Select the enclosure to highlight stack consumers and visible members.
+Failure of any member affects services depending on
+the stack and their transitive dependents. Synthetic stack targets are not counted
+as impacted services; repeated paths are deduplicated and cycles terminate.
+Unknown stacks are shown as missing targets with a warning. Membership contributes
+to impact analysis but is not drawn as individual dependency arrows.
+The JSON snapshot includes `stacks` with their member IDs, a `stack` field on
+services, and `kind: "stack"` targets with `members` when explicitly referenced.
 `doc.used_by` declares the same relationship in reverse: on a service,
 `doc.used_by: "ext:homeassistant"` creates `ext:homeassistant -> service`.
 It accepts comma-separated full service names or `ext:` names, ignoring whitespace,
@@ -88,15 +101,37 @@ published port before exposing it beyond your trusted network.
 - The diagram fills the page, with **Refresh** in the top-right corner and all
   filters in a single row at the bottom. On narrow screens the filter row scrolls
   horizontally.
-- Force-directed dependency diagram: linked nodes attract, other nodes repel,
-  and collision avoidance separates cards. Disconnected components have separate
-  centers and spacing, keeping small dependency chains out of larger clusters.
+- Services are enclosed by blue-tinted stack frames, with each stack arranged as a separate
+  force-directed group. Drag a stack's heading or background to move all its
+  visible services together; individual cards remain independently draggable.
+  Stacks with only one service have no enclosure unless
+  the stack itself is referenced as a dependency endpoint.
+  Services without a stack label, external targets, and
+  Swarm hosts remain outside stack groups. Category and host filters still apply;
+  referenced stack targets remain visible as context for filtered services.
+- Force-directed dependency diagram: nodes within a stack repel, internal links
+  attract, and collision avoidance separates cards. Stack groups have separate
+  centers and spacing; cross-stack links do not stretch their contents apart.
   Each node has a small category badge,
-  including external and missing targets. Drag nodes to rearrange, scroll to zoom,
+  including external and missing targets. External nodes are muted pink with dashed
+  borders; dependency and selection highlights override their normal colors.
+  Drag nodes to rearrange, scroll to zoom,
   and drag the background to pan. Nodes can be dragged beyond the initial diagram
   bounds; forces resume when released. Selection and search preserve the layout.
 - Search by service, category, or dependency; click a node to highlight its
-  dependencies and affected services.
+  dependencies and affected services. The selected card or stack has a blue
+  background, thick light-blue border, and glow. Direct impact is red; transitive
+  impact is orange. Highlighted arrows include every step
+  through transitive dependents, including stack dependency endpoints. Indirect
+  links are thinner and dimmer than links touching the selected node; hosting
+  links remain limited to the selected node.
+- Clicking a service, external node, or stack opens a closable information panel in the lower
+  right with dependencies and impact. Stack details also list member services;
+  their impact combines failures of any member, excluding the stack's own members.
+  Colored dots before headings match selection, dependency, and impact colors;
+  combined stack impact uses a split red/orange dot.
+  Click empty diagram space or Close to dismiss the panel and clear selection;
+  dragging the background to pan keeps the selection.
 - **Show non-dependant**, below the diagram, is unchecked by default. Enable it
   to include standalone services with neither incoming nor outgoing explicit
   dependencies. Services that others depend on remain visible.

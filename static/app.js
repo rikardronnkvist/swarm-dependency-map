@@ -29,6 +29,11 @@ function renderGraph() {
   root.replaceChildren();
   // Hosting links are optional and never change explicit dependency impact.
   const connectedIds = new Set(graph.edges.flatMap(edge => [edge.source, edge.target]));
+  for (const stack of graph.stacks || []) {
+    if (connectedIds.has(stack.id)) {
+      for (const id of stack.members) connectedIds.add(id);
+    }
+  }
   const showNonDependant = document.getElementById("show-non-dependant").checked;
   const category = document.getElementById("category").value;
   const showSwarm = document.getElementById("show-swarm-nodes").checked;
@@ -36,12 +41,19 @@ function renderGraph() {
   const hostedServices = new Set((graph.placement_edges || [])
     .filter(edge => edge.target === swarmNode).map(edge => edge.source));
   const nodes = graph.nodes
+    .filter(node => node.kind !== "stack")
     .filter(node => node.kind === "service" || connectedIds.has(node.id))
     .filter(node => showNonDependant || connectedIds.has(node.id))
     .filter(node => !category || node.categories.includes(category))
     .filter(node => !swarmNode || hostedServices.has(node.id))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const serviceIds = new Set(nodes.map(node => node.id));
+  const referencedStacks = new Set(graph.edges
+    .filter(edge => serviceIds.has(edge.source) || serviceIds.has(edge.target))
+    .flatMap(edge => [edge.source, edge.target]));
+  const stackTargets = graph.nodes.filter(node => node.kind === "stack" && referencedStacks.has(node.id));
+  // Empty, filtered stacks still need a layout anchor, but never a service card.
+  nodes.push(...stackTargets.filter(stack => !nodes.some(node => node.stack === stack.name)));
   const placements = showSwarm
     ? (graph.placement_edges || []).filter(edge => serviceIds.has(edge.source)) : [];
   const hostIds = new Set(placements.map(edge => edge.target));
@@ -50,6 +62,7 @@ function renderGraph() {
       swarmNode ? node.id === swarmNode || hostIds.has(node.id) : !category || hostIds.has(node.id)));
   }
   if (!nodes.length) {
+    selected = null;
     root.append(element("p", graph.service_count
       ? "No services match these filters. Enable Show non-dependant or choose another category."
       : "No services found in this swarm."));
@@ -75,31 +88,24 @@ function renderGraph() {
   const nodeHeight = Math.max(...[...categoryBadges.values()].map(badges =>
     badges[badges.length - 1].y + 29));
   const visibleIds = new Set(nodes.map(node => node.id));
+  for (const stack of stackTargets) visibleIds.add(stack.id);
   const edges = [
     ...graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
     ...placements.map(edge => ({...edge, kind: "placement"})),
   ];
-  const neighbors = new Map(nodes.map(node => [node.id, []]));
-  for (const edge of edges) {
-    neighbors.get(edge.source).push(edge.target);
-    neighbors.get(edge.target).push(edge.source);
-  }
-  const components = [];
-  const visited = new Set();
+  const stackById = new Map((graph.stacks || []).map(stack => [stack.id, stack]));
+  const grouped = new Map();
   for (const node of nodes) {
-    if (visited.has(node.id)) continue;
-    const ids = [node.id];
-    visited.add(node.id);
-    for (let index = 0; index < ids.length; index++) {
-      for (const id of neighbors.get(ids[index])) {
-        if (!visited.has(id)) {
-          visited.add(id);
-          ids.push(id);
-        }
-      }
-    }
-    components.push({ids});
+    const stackId = node.kind === "stack" ? node.id : node.stack ? `stack:${node.stack}` : null;
+    const key = stackId || node.id;
+    if (!grouped.has(key)) grouped.set(key, {ids: [], stack: stackById.get(stackId)});
+    grouped.get(key).ids.push(node.id);
   }
+  for (const stack of stackTargets) {
+    const component = grouped.get(stack.id);
+    component.referenced = true;
+  }
+  const components = [...grouped.values()];
   components.sort((a, b) => b.ids.length - a.ids.length);
   const gap = 140;
   for (const component of components) {
@@ -137,8 +143,80 @@ function renderGraph() {
   });
   marker.append(svgElement("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#94a3b8"}));
   defs.append(marker);
+  const activeMarker = marker.cloneNode(true);
+  activeMarker.setAttribute("id", "arrow-active");
+  activeMarker.firstElementChild.setAttribute("fill", "#38bdf8");
+  defs.append(activeMarker);
   svg.append(defs);
-  if (!visibleIds.has(selected)) selected = null;
+  for (const component of components) {
+    if (!component.stack || (component.stack.members.length < 2 && !component.referenced)) continue;
+    const outline = svgElement("g", {class: "stack-group", "data-stack": component.stack.id});
+    component.rect = svgElement("rect", {rx: 14});
+    component.title = svgElement("text");
+    component.title.textContent = component.stack.name;
+    const title = svgElement("title");
+    title.textContent = `Stack: ${component.stack.name}`;
+    outline.append(component.rect, component.title, title);
+    outline.setAttribute("tabindex", "0");
+    outline.setAttribute("role", "button");
+    outline.setAttribute("aria-label", `Stack: ${component.stack.name}`);
+    let drag = null;
+    let dragged = false;
+    outline.addEventListener("click", event => {
+      event.stopPropagation();
+      if (!dragged) select(component.stack.id);
+      dragged = false;
+    });
+    outline.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      autoFit = false;
+      drag = {point: pointer(event), startX: event.clientX, startY: event.clientY};
+      dragged = false;
+      for (const body of component.bodies) {
+        body.pinned = true;
+        body.vx = body.vy = 0;
+      }
+      outline.setPointerCapture(event.pointerId);
+      outline.classList.add("dragging");
+    });
+    outline.addEventListener("pointermove", event => {
+      if (!drag) return;
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) dragged = true;
+      if (!dragged) return;
+      const point = pointer(event);
+      const dx = point.x - drag.point.x;
+      const dy = point.y - drag.point.y;
+      for (const body of component.bodies) {
+        body.x += dx;
+        body.y += dy;
+      }
+      component.x += dx;
+      component.y += dy;
+      drag.point = point;
+      draw();
+      restart();
+    });
+    const release = () => {
+      if (!drag) return;
+      drag = null;
+      for (const body of component.bodies) body.pinned = false;
+      outline.classList.remove("dragging");
+      restart();
+    };
+    outline.addEventListener("pointerup", release);
+    outline.addEventListener("pointercancel", release);
+    outline.addEventListener("lostpointercapture", release);
+    outline.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        select(component.stack.id);
+      }
+    });
+    svg.append(outline);
+  }
+  if (!visibleIds.has(selected) && !components.some(component =>
+    component.stack?.id === selected && component.stack.members.length > 1)) selected = null;
   for (const id of positions.keys()) {
     if (!byId.has(id)) positions.delete(id);
   }
@@ -156,6 +234,7 @@ function renderGraph() {
     }
   });
   const links = [];
+  const stackComponent = id => grouped.get(id)?.stack ? grouped.get(id) : null;
   for (const edge of edges) {
     const from = positions.get(edge.source);
     const to = positions.get(edge.target);
@@ -171,10 +250,15 @@ function renderGraph() {
       : `${edge.source} → ${edge.target}`;
     path.append(title);
     svg.append(path);
-    links.push({from, to, path});
+    const fromStack = stackComponent(edge.source);
+    const toStack = stackComponent(edge.target);
+    links.push({from, to, fromStack, toStack, path,
+      internal: !fromStack && !toStack
+        && componentById.get(edge.source) === componentById.get(edge.target)});
   }
   const groups = [];
   for (const node of nodes) {
+    if (node.kind === "stack") continue;
     const position = positions.get(node.id);
     const group = svgElement("g", {
       class: `node ${node.kind}${node.kind === "swarm" && swarmNode && node.id !== swarmNode ? " secondary" : ""}`,
@@ -270,14 +354,19 @@ function renderGraph() {
     updateView();
   }, {passive: false});
   let pan = null;
+  let panStart = null;
+  let panned = false;
   svg.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
     autoFit = false;
     pan = pointer(event);
+    panStart = {x: event.clientX, y: event.clientY};
+    panned = false;
     svg.setPointerCapture(event.pointerId);
   });
   svg.addEventListener("pointermove", event => {
     if (!pan) return;
+    if (Math.hypot(event.clientX - panStart.x, event.clientY - panStart.y) > 4) panned = true;
     const point = pointer(event);
     view.x += pan.x - point.x;
     view.y += pan.y - point.y;
@@ -287,8 +376,24 @@ function renderGraph() {
   svg.addEventListener("pointerup", endPan);
   svg.addEventListener("pointercancel", endPan);
   svg.addEventListener("lostpointercapture", endPan);
+  svg.addEventListener("click", event => {
+    if (!panned && !event.target.closest(".node, .stack-group")) select(null);
+  });
 
   function draw() {
+    for (const component of components) {
+      if (!component.rect) continue;
+      const left = Math.min(...component.bodies.map(b => b.x)) - nodeWidth / 2 - 24;
+      const top = Math.min(...component.bodies.map(b => b.y)) - nodeHeight / 2 - 48;
+      component.rect.setAttribute("x", left);
+      component.rect.setAttribute("y", top);
+      component.rect.setAttribute("width",
+        Math.max(...component.bodies.map(b => b.x)) + nodeWidth / 2 + 24 - left);
+      component.rect.setAttribute("height",
+        Math.max(...component.bodies.map(b => b.y)) + nodeHeight / 2 + 24 - top);
+      component.title.setAttribute("x", left + 14);
+      component.title.setAttribute("y", top + 25);
+    }
     if (autoFit) {
       const left = Math.min(...bodies.map(b => b.x)) - nodeWidth / 2 - 80;
       const top = Math.min(...bodies.map(b => b.y)) - nodeHeight / 2 - 80;
@@ -302,11 +407,20 @@ function renderGraph() {
     for (const {position, group} of groups) {
       group.setAttribute("transform", `translate(${position.x - nodeWidth / 2} ${position.y - nodeHeight / 2})`);
     }
-    for (const {from, to, path} of links) {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const scale = 1 / Math.max(Math.abs(dx) / (nodeWidth / 2 + 4), Math.abs(dy) / (nodeHeight / 2 + 4), .001);
-      path.setAttribute("d", `M ${from.x + dx * scale} ${from.y + dy * scale} L ${to.x - dx * scale} ${to.y - dy * scale}`);
+    const endpoint = (body, stack) => {
+      if (!stack) return {x: body.x, y: body.y, width: nodeWidth + 8, height: nodeHeight + 8};
+      const bounds = stack.rect.getBBox();
+      return {x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2,
+        width: bounds.width + 8, height: bounds.height + 8};
+    };
+    for (const {from, to, fromStack, toStack, path} of links) {
+      const a = endpoint(from, fromStack);
+      const b = endpoint(to, toStack);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const start = 1 / Math.max(Math.abs(dx) / (a.width / 2), Math.abs(dy) / (a.height / 2), .001);
+      const end = 1 / Math.max(Math.abs(dx) / (b.width / 2), Math.abs(dy) / (b.height / 2), .001);
+      path.setAttribute("d", `M ${a.x + dx * start} ${a.y + dy * start} L ${b.x - dx * end} ${b.y - dy * end}`);
     }
   }
 
@@ -321,6 +435,7 @@ function renderGraph() {
     for (let i = 0; i < bodies.length; i++) {
       const a = bodies[i];
       for (let j = i + 1; j < bodies.length; j++) {
+        if (componentById.get(nodes[i].id) !== componentById.get(nodes[j].id)) continue;
         const b = bodies[j];
         const dx = b.x - a.x || .01;
         const dy = b.y - a.y || .01;
@@ -332,7 +447,8 @@ function renderGraph() {
         if (!b.pinned) { b.vx += fx; b.vy += fy; }
       }
     }
-    for (const {from, to} of links) {
+    for (const {from, to, internal} of links) {
+      if (!internal) continue;
       const dx = to.x - from.x;
       const dy = to.y - from.y;
       const distance = Math.hypot(dx, dy) || 1;
@@ -344,19 +460,19 @@ function renderGraph() {
       const body = positions.get(node.id);
       const center = componentById.get(node.id);
       if (body.pinned) continue;
-      body.vx = (body.vx + (center.x - body.x) * .001 * energy) * .75;
-      body.vy = (body.vy + (center.y - body.y) * .001 * energy) * .75;
+      body.vx = (body.vx + (center.x - body.x) * .01 * energy) * .75;
+      body.vy = (body.vy + (center.y - body.y) * .01 * energy) * .75;
       body.x += Math.max(-18, Math.min(18, body.vx));
       body.y += Math.max(-18, Math.min(18, body.vy));
     }
-    // Separate whole components, not just cards, so small graphs cannot get trapped inside larger ones.
+    // Keep stack enclosures separate, including their headings and padding.
     for (let pass = 0; pass < 6; pass++) {
       const bounds = components.map(component => ({
         component,
-        left: Math.min(...component.bodies.map(b => b.x)) - nodeWidth / 2,
-        right: Math.max(...component.bodies.map(b => b.x)) + nodeWidth / 2,
-        top: Math.min(...component.bodies.map(b => b.y)) - nodeHeight / 2,
-        bottom: Math.max(...component.bodies.map(b => b.y)) + nodeHeight / 2,
+        left: Math.min(...component.bodies.map(b => b.x)) - nodeWidth / 2 - 24,
+        right: Math.max(...component.bodies.map(b => b.x)) + nodeWidth / 2 + 24,
+        top: Math.min(...component.bodies.map(b => b.y)) - nodeHeight / 2 - 48,
+        bottom: Math.max(...component.bodies.map(b => b.y)) + nodeHeight / 2 + 24,
       }));
       for (let i = 0; i < bounds.length; i++) {
         for (let j = i + 1; j < bounds.length; j++) {
@@ -426,15 +542,79 @@ function renderGraph() {
 }
 
 function matches(node, query) {
-  return [node.id, node.name, ...node.categories, ...node.depends_on]
+  return [node.id, node.name, node.stack || "", ...node.categories, ...node.depends_on]
     .some(value => value.toLowerCase().includes(query));
+}
+
+function renderInfo() {
+  const panel = document.getElementById("node-info");
+  const node = byId.get(selected);
+  const stack = (graph.stacks || []).find(stack => stack.id === selected);
+  panel.hidden = !stack && node?.kind !== "service" && node?.kind !== "external";
+  if (panel.hidden) return;
+  document.getElementById("node-info-title").textContent = stack ? stack.name : node.name;
+  const details = element("dl");
+  const add = (label, values, color) => {
+    details.append(element("dt", label, color ? `info-color ${color}` : undefined));
+    const value = element("dd");
+    if (Array.isArray(values) && values.length) {
+      const list = element("ul");
+      for (const id of values) list.append(element("li", byId.get(id)?.name || id));
+      value.append(list);
+    } else {
+      value.textContent = Array.isArray(values) ? "None" : values;
+    }
+    details.append(value);
+  };
+  add("Type", stack ? "Stack" : node.kind === "external" ? "External" : "Service");
+  if (stack) {
+    add(`Services (${stack.members.length})`, stack.members, "dependency");
+    const memberIds = new Set([stack.id, ...stack.members]);
+    const members = stack.members.map(id => byId.get(id)).filter(Boolean);
+    const dependencies = [...new Set(members.flatMap(member => member.depends_on))]
+      .filter(id => !memberIds.has(id)).sort();
+    const consumers = graph.edges.filter(edge => memberIds.has(edge.target))
+      .map(edge => edge.source);
+    const affected = [...new Set([
+      ...consumers,
+      ...(node ? [...node.used_by, ...node.transitive_impact] : []),
+      ...members.flatMap(member => [...member.used_by, ...member.transitive_impact]),
+    ])].filter(id => !memberIds.has(id)).sort();
+    add("Depends on", dependencies, "dependency");
+    add(`Affected services (${affected.length})`, affected, "impact");
+  } else {
+    add(node.kind === "external" ? "External ID" : "Service ID", node.id);
+    if (node.kind === "service") add("Stack", node.stack || "None");
+    add("Categories", node.categories);
+    add("Depends on", node.depends_on, "dependency");
+    add("Used by", node.used_by, "dependent");
+    add("Transitive impact", node.transitive_impact, "transitive");
+  }
+  document.getElementById("node-info-content").replaceChildren(details);
 }
 
 function render() {
   if (!graph) return;
+  renderInfo();
   const query = document.getElementById("search").value.toLowerCase().trim();
   const current = byId.get(selected);
   const affected = new Set(current ? [...current.used_by, ...current.transitive_impact] : []);
+  const transitive = new Set(current?.transitive_impact || []);
+  const impactPath = new Set([selected, ...affected]);
+  for (const stack of graph.stacks || []) {
+    if (stack.members.some(id => impactPath.has(id))) impactPath.add(stack.id);
+  }
+  for (const outline of document.querySelectorAll("#graph .stack-group")) {
+    outline.classList.toggle("selected", outline.dataset.stack === selected);
+    outline.classList.toggle("dependent", outline.dataset.stack !== selected
+      && impactPath.has(outline.dataset.stack));
+    const stack = (graph.stacks || []).find(stack => stack.id === outline.dataset.stack);
+    outline.classList.toggle("transitive", outline.dataset.stack !== selected
+      && Boolean(stack?.members.some(id => transitive.has(id)))
+      && !stack.members.some(id => current?.used_by.includes(id)));
+    outline.classList.toggle("dependency", Boolean(current?.depends_on.includes(outline.dataset.stack)));
+    outline.setAttribute("aria-pressed", String(outline.dataset.stack === selected));
+  }
   const hosted = new Set();
   if (document.getElementById("show-swarm-nodes").checked) {
     for (const edge of graph.placement_edges || []) {
@@ -446,13 +626,19 @@ function render() {
     const node = byId.get(group.dataset.id);
     group.classList.toggle("selected", node.id === selected);
     group.classList.toggle("dependent", node.id !== selected && affected.has(node.id));
-    group.classList.toggle("dependency", node.id !== selected && !affected.has(node.id) && Boolean(current?.depends_on.includes(node.id)));
+    group.classList.toggle("transitive", node.id !== selected && transitive.has(node.id));
+    group.classList.toggle("dependency", node.id !== selected && !affected.has(node.id)
+      && Boolean(current && [...current.depends_on, ...(current.members || [])].includes(node.id)));
     group.classList.toggle("dimmed", !matches(node, query));
     group.classList.toggle("hosted", node.id !== selected && hosted.has(node.id));
     group.setAttribute("aria-pressed", String(node.id === selected));
   }
   for (const edge of document.querySelectorAll("#graph .edge")) {
-    edge.classList.toggle("active", edge.dataset.source === selected || edge.dataset.target === selected);
+    const direct = edge.dataset.source === selected || edge.dataset.target === selected;
+    const impact = !edge.classList.contains("placement")
+      && affected.has(edge.dataset.source) && impactPath.has(edge.dataset.target);
+    edge.classList.toggle("active", direct || impact);
+    edge.classList.toggle("indirect", impact && !direct);
   }
 }
 
@@ -486,7 +672,8 @@ async function refresh() {
       ? previousSwarmNode : "";
     const category = document.getElementById("category");
     const previousCategory = category.value;
-    const categories = [...new Set(graph.nodes.flatMap(node => node.categories))].sort();
+    const categories = [...new Set(graph.nodes
+      .filter(node => node.kind !== "stack").flatMap(node => node.categories))].sort();
     const allCategories = element("option", "All categories");
     allCategories.value = "";
     category.replaceChildren(allCategories);
@@ -496,7 +683,7 @@ async function refresh() {
       category.append(option);
     }
     category.value = categories.includes(previousCategory) ? previousCategory : "";
-    if (!byId.has(selected)) selected = null;
+    if (!byId.has(selected) && !(graph.stacks || []).some(stack => stack.id === selected)) selected = null;
     renderGraph();
     render();
   } catch (failure) {
@@ -510,6 +697,7 @@ async function refresh() {
 }
 
 document.getElementById("refresh").addEventListener("click", refresh);
+document.getElementById("close-info").addEventListener("click", () => select(null));
 document.getElementById("search").addEventListener("input", render);
 function updateFilters() {
   if (!graph) return;
