@@ -15,12 +15,26 @@ STATIC = Path(__file__).parent / "static"
 TRAEFIK = os.environ.get("TRAEFIK_SERVICE", "traefik_traefik")
 AUTHENTIK = os.environ.get("AUTHENTIK_SERVICE", "authentik_server")
 ICON_SLUG = re.compile(r"^[a-z0-9-]+$")
+ICON_URL = re.compile(
+    r"https://(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+"
+    r"[a-zA-Z](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?"
+    r"(?::[1-9][0-9]{0,4})?(?:[/?#][^\s\\]*)?"
+)
 DEFAULT_ICON = "docker"
-ICON_CDN = "https://cdn.jsdelivr.net"
 
 
 def icon_slug(value):
-    return value if value and ICON_SLUG.fullmatch(value) else DEFAULT_ICON
+    if not isinstance(value, str):
+        return DEFAULT_ICON
+    if ICON_SLUG.fullmatch(value):
+        return value
+    if ICON_URL.fullmatch(value):
+        try:
+            if urlsplit(value).port is None or urlsplit(value).port <= 65535:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_ICON
 
 
 def container_has_published_port(container, service):
@@ -289,7 +303,11 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=()):
         nodes.append({
             "id": name,
             "name": short_name(name, labels),
-            "icon": service_icons.get(name, stack_icons.get(name, DEFAULT_ICON)),
+            "icon": service_icons.get(name, stack_icons.get(
+                name,
+                name[4:] if kind == "external" and ICON_SLUG.fullmatch(name[4:])
+                else DEFAULT_ICON,
+            )),
             "kind": kind,
             "stack": labels.get(name, {}).get("com.docker.stack.namespace"),
             "members": sorted(stacks.get(name, [])),
@@ -417,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy",
-                         f"default-src 'self'; img-src 'self' {ICON_CDN}; object-src 'none'; "
+                         "default-src 'self'; img-src 'self' https:; object-src 'none'; "
                          "base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)

@@ -21,9 +21,11 @@ const svgElement = (tag, attributes = {}) => {
 const ICON_BASE = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons";
 const FALLBACK_ICON = "docker";
 const ICON_SLUG = /^[a-z0-9-]+$/;
+const ICON_URL = /^https:\/\/(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?::[1-9][0-9]{0,4})?(?:[/?#][^\s\\]*)?$/;
 const iconUrls = new Map();
 const probeImage = url => new Promise(resolve => {
   const image = new Image();
+  image.referrerPolicy = "no-referrer";
   image.onload = () => resolve(true);
   image.onerror = () => resolve(false);
   image.src = url;
@@ -43,16 +45,31 @@ async function probeIcon(slug) {
 }
 
 function resolveIcon(value) {
-  const slug = typeof value === "string" && ICON_SLUG.test(value) ? value : FALLBACK_ICON;
-  if (!iconUrls.has(slug)) {
-    iconUrls.set(slug, probeIcon(slug).then(url => url || (
-      slug === FALLBACK_ICON ? null : resolveIcon(FALLBACK_ICON))));
+  let icon = FALLBACK_ICON;
+  let directUrl = false;
+  if (typeof value === "string" && ICON_SLUG.test(value)) {
+    icon = value;
+  } else if (typeof value === "string" && ICON_URL.test(value) && !/\s/.test(value)) {
+    try {
+      icon = new URL(value).href;
+      directUrl = true;
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+    }
   }
-  return iconUrls.get(slug);
+  if (!iconUrls.has(icon)) {
+    const resolved = directUrl
+      ? probeImage(icon).then(loaded => loaded ? icon : null)
+      : probeIcon(icon);
+    iconUrls.set(icon, resolved.then(url => url || (
+      icon === FALLBACK_ICON ? null : resolveIcon(FALLBACK_ICON))));
+  }
+  return iconUrls.get(icon);
 }
 
 function iconElement(slug, attributes) {
   const image = svgElement("image", {...attributes, "aria-hidden": "true"});
+  image.setAttribute("referrerpolicy", "no-referrer");
   image.addEventListener("error", () => image.remove());
   resolveIcon(slug).then(url => {
     if (url) image.setAttribute("href", url);
@@ -64,6 +81,7 @@ function iconElement(slug, attributes) {
 function infoIconElement(slug) {
   const image = element("img", undefined, "info-icon");
   image.alt = "";
+  image.referrerPolicy = "no-referrer";
   image.setAttribute("aria-hidden", "true");
   image.addEventListener("error", () => image.remove());
   resolveIcon(slug).then(url => {
@@ -97,10 +115,10 @@ function renderGraph() {
     .filter(edge => edge.target === swarmNode).map(edge => edge.source));
   const nodes = graph.nodes
     .filter(node => node.kind !== "stack")
-    .filter(node => node.kind === "service" || connectedIds.has(node.id))
-    .filter(node => showNonDependant || connectedIds.has(node.id))
-    .filter(node => !category || node.categories.includes(category))
-    .filter(node => !swarmNode || hostedServices.has(node.id))
+    .filter(node => node.id === selected || node.kind === "service" || connectedIds.has(node.id))
+    .filter(node => node.id === selected || showNonDependant || connectedIds.has(node.id))
+    .filter(node => node.id === selected || !category || node.categories.includes(category))
+    .filter(node => node.id === selected || !swarmNode || hostedServices.has(node.id))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const serviceIds = new Set(nodes.map(node => node.id));
   const referencedStacks = new Set(graph.edges
@@ -618,21 +636,40 @@ function renderInfo() {
   );
   const details = element("dl");
   const stacksById = new Map((graph.stacks || []).map(item => [item.id, item]));
-  const add = (label, values, color) => {
+  const add = (label, values, color, categories = false) => {
     details.append(element("dt", label, color ? `info-color ${color}` : undefined));
     const value = element("dd");
     if (Array.isArray(values) && values.length) {
       const list = element("ul");
       for (const id of values) {
+        if (categories) {
+          const item = element("li");
+          const button = element("button", id, "info-related");
+          button.type = "button";
+          button.setAttribute("aria-pressed",
+            String(document.getElementById("category").value === id));
+          button.addEventListener("click", () => applyCategoryFilter(id));
+          item.append(button);
+          list.append(item);
+          continue;
+        }
         const relatedNode = byId.get(id);
         const relatedStack = stacksById.get(id);
         const item = element("li");
         const icon = infoIconElement(relatedNode?.icon || relatedStack?.icon || FALLBACK_ICON);
         icon.classList.add("info-list-icon");
-        item.append(
-          icon,
-          element("span", relatedNode?.name || relatedStack?.name || id),
-        );
+        const name = element("span", relatedNode?.name || relatedStack?.name || id);
+        if (relatedNode) {
+          const link = element("button", undefined, "info-related");
+          link.type = "button";
+          link.setAttribute("aria-pressed", String(id === selected));
+          link.classList.toggle("selected", id === selected);
+          link.append(icon, name);
+          link.addEventListener("click", () => select(id));
+          item.append(link);
+        } else {
+          item.append(icon, name);
+        }
         list.append(item);
       }
       value.append(list);
@@ -666,7 +703,7 @@ function renderInfo() {
         .sort((a, b) => byId.get(a).name.localeCompare(byId.get(b).name));
       add("Swarm nodes", hosts.length ? hosts : "No running tasks", "swarm");
     }
-    add("Categories", node.categories);
+    add("Categories", node.categories, undefined, true);
     add("Depends on", node.depends_on, "dependency");
     add("Used by", node.used_by, "dependent");
     add("Transitive impact", node.transitive_impact, "transitive");
@@ -724,11 +761,9 @@ function render() {
 }
 
 async function refresh() {
-  const button = document.getElementById("refresh");
   const swarmCheckbox = document.getElementById("show-swarm-nodes");
   const swarmFilter = document.getElementById("swarm-node");
   const error = document.getElementById("error");
-  button.disabled = true;
   swarmCheckbox.disabled = true;
   swarmFilter.disabled = true;
   error.hidden = true;
@@ -770,13 +805,11 @@ async function refresh() {
     error.textContent = failure.message;
     error.hidden = false;
   } finally {
-    button.disabled = false;
     swarmCheckbox.disabled = false;
     swarmFilter.disabled = !swarmCheckbox.checked || !graph?.swarm_nodes;
   }
 }
 
-document.getElementById("refresh").addEventListener("click", refresh);
 document.getElementById("close-info").addEventListener("click", () => select(null));
 document.getElementById("search").addEventListener("input", render);
 function updateFilters() {
@@ -790,9 +823,13 @@ document.getElementById("show-swarm-nodes").addEventListener("change", () => {
   positions.clear();
   refresh();
 });
-document.getElementById("category").addEventListener("change", () => {
+function applyCategoryFilter(value) {
+  document.getElementById("category").value = value;
   positions.clear();
   updateFilters();
+}
+document.getElementById("category").addEventListener("change", event => {
+  applyCategoryFilter(event.target.value);
 });
 document.getElementById("swarm-node").addEventListener("change", () => {
   positions.clear();

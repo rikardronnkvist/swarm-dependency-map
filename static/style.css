@@ -2,7 +2,6 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { position: relative; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
-#refresh { position: absolute; top: 1rem; right: 1rem; z-index: 1; }
 p { line-height: 1.6; }
 button, input, select { font: inherit; color: inherit; background: #1e293b; border: 1px solid #64748b; border-radius: 5px; padding: .5rem .75rem; }
 button { cursor: pointer; }
@@ -20,9 +19,12 @@ input[type="search"] { width: 20rem; }
 #node-info dl { margin: 0; font-size: .85rem; }
 #node-info dt { margin-top: .75rem; color: #94a3b8; }
 #node-info dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
-#node-info ul { margin: 0; padding-left: 1.25rem; }
+#node-info ul { margin: 0; padding-left: 0; }
 #node-info li { display: flex; align-items: center; gap: .4rem; }
 #node-info .info-list-icon { flex: 0 0 1rem; width: 1rem; height: 1rem; object-fit: contain; }
+#node-info .info-related { display: flex; align-items: center; gap: .4rem; width: 100%; padding: .2rem .35rem .2rem 1.6rem; text-align: left; background: transparent; border-color: transparent; }
+#node-info .info-related:hover, #node-info .info-related:focus-visible { background: #26364f; border-color: #38bdf8; }
+#node-info .info-related.selected { background: #1d4ed833; border-color: #60a5fa; }
 #node-info .info-color::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .5rem; border-radius: 50%; background: var(--info-color); }
 #node-info .selected { --info-color: #7dd3fc; }
 #node-info .dependency { --info-color: #2dd4bf; }

@@ -288,8 +288,44 @@ class GraphTests(unittest.TestCase):
         ])
         icons = {node["id"]: node["icon"] for node in graph["nodes"]}
         self.assertEqual(icons, {
-            "a": "radarr", "b": "docker", "c": "docker", "d": "docker", "ext:plex": "docker",
+            "a": "radarr", "b": "docker", "c": "docker", "d": "docker", "ext:plex": "plex",
         })
+
+    def test_external_icon_uses_valid_name_without_aliases(self):
+        graph = app.build_graph([service("web", {
+            "doc.depends_on": "ext:plex,ext:home-assistant,ext:unknown-icon,ext:../invalid",
+            "doc.used_by": "ext:consumer",
+        })])
+        icons = {node["id"]: node["icon"] for node in graph["nodes"]}
+        self.assertEqual(icons["ext:plex"], "plex")
+        self.assertEqual(icons["ext:home-assistant"], "home-assistant")
+        self.assertEqual(icons["ext:unknown-icon"], "unknown-icon")
+        self.assertEqual(icons["ext:../invalid"], "docker")
+        self.assertEqual(icons["ext:consumer"], "consumer")
+
+    def test_https_icon_urls_are_preserved_in_services_and_stacks(self):
+        url = "https://kvitt.teambail.se/apple-touch-icon-v2.png"
+        graph = app.build_graph([service("example_web", {
+            "doc.icon": url,
+            "doc.depends_on": "",
+            "com.docker.stack.namespace": "example",
+        })])
+        self.assertEqual(graph["nodes"][0]["icon"], url)
+        self.assertEqual(graph["stacks"][0]["icon"], url)
+        self.assertEqual(app.icon_slug("https://icons.example.com:8443/icon.png?v=2"),
+                         "https://icons.example.com:8443/icon.png?v=2")
+
+    def test_invalid_icon_urls_fall_back_to_docker(self):
+        for value in (
+            "http://icons.example.com/icon.png", "//icons.example.com/icon.png",
+            "javascript:alert(1)", "data:image/png;base64,AA", "https://",
+            "https://user:password@icons.example.com/icon.png",
+            "https://icons.example.com:65536/icon.png",
+            "https://icons.example.com/icon.png\n",
+            "https://icons.example.com\\other/icon.png", "https://localhost/icon.png",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(app.icon_slug(value), "docker")
 
     def test_multiple_categories(self):
         graph = app.build_graph([
@@ -478,7 +514,7 @@ class HTTPTests(unittest.TestCase):
                 self.assertIn(content_type, headers["Content-Type"])
                 self.assertEqual(int(headers["Content-Length"]), len(body))
                 self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
-                self.assertIn("img-src 'self' https://cdn.jsdelivr.net",
+                self.assertIn("img-src 'self' https:;",
                               headers["Content-Security-Policy"])
                 self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(self.get("/../app.py")[0], 404)

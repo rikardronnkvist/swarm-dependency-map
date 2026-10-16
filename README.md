@@ -51,11 +51,21 @@ normalized `categories` array and retains the original `category` string.
 
 `doc.icon` is a [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons)
 slug (for example `radarr`, no extension or `-light`/`-dark` suffix). The slug must match
-`^[a-z0-9-]+$`; otherwise, and for stacks, external targets and Swarm nodes, the `docker`
-icon is used. The browser loads icons directly from the jsDelivr CDN (allowed in the CSP
+`^[a-z0-9-]+$`. Alternatively, use an absolute HTTPS URL with a fully qualified hostname,
+for example `doc.icon=https://kvitt.teambail.se/apple-touch-icon-v2.png`.
+HTTP, embedded credentials and other URL schemes are rejected. Invalid or missing
+values use `docker`. For slugs, the browser loads icons directly from the jsDelivr CDN (allowed in the CSP
 `img-src`): `{slug}-light.svg`, then `{slug}.svg`, then `{slug}.png`, then the `docker`
-icon. Resolved URLs are cached per slug and a failed icon never breaks rendering. The
-JSON API exposes the validated slug as `icon`.
+icon. Direct URLs are loaded as-is, without variant or extension probing, and fall back
+to `docker` on failure. Resolved URLs are cached per slug or URL and a failed icon never
+breaks rendering. The JSON API exposes the validated slug or URL as `icon`. Custom images
+are fetched by the browser, not the backend, with no referrer; CSP `img-src` permits
+HTTPS image sources. This applies to graph nodes, stack icons and the info panel.
+
+External nodes use the name after `ext:` as an icon slug when it matches
+`^[a-z0-9-]+$`, for example `ext:plex` or `ext:home-assistant`. There are no
+per-service aliases. Unknown icons fall back to `docker` using the same cached
+SVG/PNG resolution as service icons.
 
 Service metadata such as categories and dependencies is read from service labels
 (`deploy.labels` / `Spec.Labels`), not `TaskTemplate.ContainerSpec.Labels`. For icon
@@ -118,8 +128,8 @@ published port before exposing it beyond your trusted network.
 
 ## Interface and analysis
 
-- The diagram fills the page, with **Refresh** in the top-right corner and all
-  filters in a single row at the bottom. On narrow screens the filter row scrolls
+- The diagram fills the page, with all filters in a single row at the bottom.
+  On narrow screens the filter row scrolls
   horizontally.
 - Services are enclosed by blue-tinted stack frames, with each stack arranged as a separate
   force-directed group. Drag a stack's heading or background to move all its
@@ -172,11 +182,13 @@ published port before exposing it beyond your trusted network.
   services remain visible with muted cards and hosting links; unrelated services
   on those hosts are not added.
   Category and standalone-service filters still apply. Changing host rebuilds the
-  layout; Refresh preserves the selected host while it still exists.
+  layout; reloading discovery preserves the selected host while it still exists.
 - Search and the **Category** dropdown are below the diagram. Selecting a category
-  shows only nodes in that category and edges between them; the standalone-service
+  filters the diagram to that category and edges between matching nodes; the standalone-service
   checkbox still applies. Changing category rebuilds the layout and resets zoom
-  and pan. **All categories** restores the unfiltered category view.
+  and pan. Clicking a category in the info panel applies the same filter while
+  preserving the selected node and its highlight. **All categories** restores the
+  unfiltered category view.
 - Direct dependents, additional transitive dependents, and total explicit impact
   are available in the JSON API.
   Cycles terminate safely; a target is not counted as its own impacted service.
@@ -187,8 +199,8 @@ published port before exposing it beyond your trusted network.
   and their counts can overlap explicit relationships.
 - Warnings in the JSON API for missing `doc.depends_on`, self-dependencies, and unknown service
   targets. An explicitly empty dependency label produces no warning.
-- **Refresh** re-reads the current service specifications without restarting.
-  If discovery fails, the UI marks the last successful snapshot as stale.
+- Reload the page to re-read the current service specifications without restarting
+  the application. Discovery errors are shown explicitly in the UI.
 
 `GET /api/dependencies` returns the same snapshot as JSON. `GET /healthz` is a
 process liveness check, not a Docker connectivity/readiness check. Discovery
@@ -197,7 +209,8 @@ failures return HTTP 503 with an actionable message; details go to server logs.
 `placement_edges`, populated from `/nodes` and `/tasks`. These endpoints are not
 queried by the default API request without the query parameter. The web UI always
 requests this expanded topology so service information can list hosts even when
-their cards are hidden. Refresh re-reads all three resources. Discovery failures
+their cards are hidden. Page load and changes to **Show Swarm nodes** re-read all
+three resources. Discovery failures
 are explicit; no partial topology is returned.
 
 Configuration via environment variables:
