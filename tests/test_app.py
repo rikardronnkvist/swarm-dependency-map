@@ -506,6 +506,13 @@ class HTTPTests(unittest.TestCase):
             ("/", "text/html"),
             ("/app.js", "text/javascript"),
             ("/style.css", "text/css"),
+            ("/android-chrome-192x192.png", "image/png"),
+            ("/android-chrome-512x512.png", "image/png"),
+            ("/apple-touch-icon.png", "image/png"),
+            ("/favicon-16x16.png", "image/png"),
+            ("/favicon-32x32.png", "image/png"),
+            ("/favicon.ico", "image/x-icon"),
+            ("/site.webmanifest", "application/manifest+json"),
             ("/healthz", "text/plain"),
         ]:
             with self.subTest(path=path):

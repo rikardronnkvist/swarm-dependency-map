@@ -421,6 +421,13 @@ class Handler(BaseHTTPRequestHandler):
                 "/": ("index.html", "text/html"),
                 "/app.js": ("app.js", "text/javascript"),
                 "/style.css": ("style.css", "text/css"),
+                "/android-chrome-192x192.png": ("android-chrome-192x192.png", "image/png"),
+                "/android-chrome-512x512.png": ("android-chrome-512x512.png", "image/png"),
+                "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+                "/favicon-16x16.png": ("favicon-16x16.png", "image/png"),
+                "/favicon-32x32.png": ("favicon-32x32.png", "image/png"),
+                "/favicon.ico": ("favicon.ico", "image/x-icon"),
+                "/site.webmanifest": ("site.webmanifest", "application/manifest+json"),
             }
             if path not in files:
                 self.respond(404, b"Not found\n", "text/plain")
