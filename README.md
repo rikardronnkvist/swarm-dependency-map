@@ -49,10 +49,29 @@ entry; badges run horizontally from right to left and wrap to additional rows
 when needed. A service appears under every assigned category. The JSON API exposes the
 normalized `categories` array and retains the original `category` string.
 
-Both service labels (`deploy.labels`) and container labels (`labels`) are read;
-service labels take precedence when the same key appears in both places.
+`doc.icon` is a [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons)
+slug (for example `radarr`, no extension or `-light`/`-dark` suffix). The slug must match
+`^[a-z0-9-]+$`; otherwise, and for stacks, external targets and Swarm nodes, the `docker`
+icon is used. The browser loads icons directly from the jsDelivr CDN (allowed in the CSP
+`img-src`): `{slug}-light.svg`, then `{slug}.svg`, then `{slug}.png`, then the `docker`
+icon. Resolved URLs are cached per slug and a failed icon never breaks rendering. The
+JSON API exposes the validated slug as `icon`.
+
+Service metadata such as categories and dependencies is read from service labels
+(`deploy.labels` / `Spec.Labels`), not `TaskTemplate.ContainerSpec.Labels`. For icon
+selection only, running task container labels from `/tasks` are matched to their Swarm
+service. If all running containers agree on `doc.icon`, that icon is used. When they
+differ, a container with a published port is preferred. If the task icons differ but
+none has a published port, or there are no running task icons, the service's `doc.icon`
+is used.
+
+Stack icons are derived from their member service icons. A shared member icon is used
+when all services agree; otherwise a service with a published port is preferred, with
+the first service by name used if none are published.
+
 Dependency discovery reads Swarm service specifications, so services with zero
-replicas are included. Optional host placement reads running tasks separately.
+replicas are included. Running task data is also used for icon selection; optional host
+placement adds node discovery.
 Missing-target warnings mean a name is absent
 from Swarm, not that its tasks are unhealthy.
 
@@ -88,8 +107,9 @@ must match on eligible managers, or constrain deployment to a suitable node.
 
 **Security:** Docker socket access is effectively host-administrator access,
 even when the socket is mounted `:ro`; that flag does not make the Docker API
-read-only. This application only issues `GET /services` and, when **Show Swarm nodes**
-is enabled, `GET /nodes` and `GET /tasks`. Deploy it only in a trusted environment.
+read-only. The web UI issues discovery requests that read `GET /services`,
+`GET /nodes`, and `GET /tasks`, including when **Show Swarm nodes** is disabled.
+Deploy it only in a trusted environment.
 A restricted Docker socket proxy allowing these read endpoints is preferable
 where available. The web UI/API have no built-in authentication
 and expose service names and topology. Keep them private or protect them with an
@@ -128,6 +148,9 @@ published port before exposing it beyond your trusted network.
 - Clicking a service, external node, or stack opens a closable information panel in the lower
   right with dependencies and impact. Stack details also list member services;
   their impact combines failures of any member, excluding the stack's own members.
+  Service details always list the Swarm hostnames with running tasks, regardless
+  of **Show Swarm nodes** or the selected host filter. Multiple replicas on the
+  same host produce one entry; services without running tasks are identified.
   Colored dots before headings match selection, dependency, and impact colors;
   combined stack impact uses a split red/orange dot.
   Click empty diagram space or Close to dismiss the panel and clear selection;
@@ -172,8 +195,10 @@ process liveness check, not a Docker connectivity/readiness check. Discovery
 failures return HTTP 503 with an actionable message; details go to server logs.
 `GET /api/dependencies?include_swarm_nodes=true` also returns `swarm_nodes` and
 `placement_edges`, populated from `/nodes` and `/tasks`. These endpoints are not
-queried in the default view. Refresh with the checkbox enabled re-reads all three
-resources. Discovery failures are explicit; no partial topology is returned.
+queried by the default API request without the query parameter. The web UI always
+requests this expanded topology so service information can list hosts even when
+their cards are hidden. Refresh re-reads all three resources. Discovery failures
+are explicit; no partial topology is returned.
 
 Configuration via environment variables:
 

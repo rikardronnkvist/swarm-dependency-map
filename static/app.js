@@ -18,6 +18,61 @@ const svgElement = (tag, attributes = {}) => {
   return node;
 };
 
+const ICON_BASE = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons";
+const FALLBACK_ICON = "docker";
+const ICON_SLUG = /^[a-z0-9-]+$/;
+const iconUrls = new Map();
+const probeImage = url => new Promise(resolve => {
+  const image = new Image();
+  image.onload = () => resolve(true);
+  image.onerror = () => resolve(false);
+  image.src = url;
+});
+
+// The UI is dark-only, so try the "-light" variant first, SVG before PNG.
+async function probeIcon(slug) {
+  const candidates = [
+    `${ICON_BASE}/svg/${slug}-light.svg`,
+    `${ICON_BASE}/svg/${slug}.svg`,
+    `${ICON_BASE}/png/${slug}.png`,
+  ];
+  for (const url of candidates) {
+    if (await probeImage(url)) return url;
+  }
+  return null;
+}
+
+function resolveIcon(value) {
+  const slug = typeof value === "string" && ICON_SLUG.test(value) ? value : FALLBACK_ICON;
+  if (!iconUrls.has(slug)) {
+    iconUrls.set(slug, probeIcon(slug).then(url => url || (
+      slug === FALLBACK_ICON ? null : resolveIcon(FALLBACK_ICON))));
+  }
+  return iconUrls.get(slug);
+}
+
+function iconElement(slug, attributes) {
+  const image = svgElement("image", {...attributes, "aria-hidden": "true"});
+  image.addEventListener("error", () => image.remove());
+  resolveIcon(slug).then(url => {
+    if (url) image.setAttribute("href", url);
+    else image.remove();
+  });
+  return image;
+}
+
+function infoIconElement(slug) {
+  const image = element("img", undefined, "info-icon");
+  image.alt = "";
+  image.setAttribute("aria-hidden", "true");
+  image.addEventListener("error", () => image.remove());
+  resolveIcon(slug).then(url => {
+    if (url) image.src = url;
+    else image.remove();
+  });
+  return image;
+}
+
 function select(id) {
   selected = id;
   render();
@@ -156,7 +211,8 @@ function renderGraph() {
     component.title.textContent = component.stack.name;
     const title = svgElement("title");
     title.textContent = `Stack: ${component.stack.name}`;
-    outline.append(component.rect, component.title, title);
+    component.icon = iconElement(component.stack.icon, {width: 20, height: 20});
+    outline.append(component.rect, component.icon, component.title, title);
     outline.setAttribute("tabindex", "0");
     outline.setAttribute("role", "button");
     outline.setAttribute("aria-label", `Stack: ${component.stack.name}`);
@@ -268,8 +324,9 @@ function renderGraph() {
     group.append(svgElement("rect", {
       x: 0, y: 0, width: nodeWidth, height: nodeHeight, rx: 6, class: "node-body",
     }));
-    const text = svgElement("text", {x: 8, y: 25});
-    text.textContent = node.name.length > 25 ? `${node.name.slice(0, 23)}…` : node.name;
+    group.append(iconElement(node.icon, {x: 8, y: 7, width: 22, height: 22}));
+    const text = svgElement("text", {x: 36, y: 25});
+    text.textContent = node.name.length > 21 ? `${node.name.slice(0, 19)}…` : node.name;
     group.append(text);
     for (const {label, x, y, width} of categoryBadges.get(node.id)) {
       const badge = svgElement("rect", {
@@ -391,7 +448,9 @@ function renderGraph() {
         Math.max(...component.bodies.map(b => b.x)) + nodeWidth / 2 + 24 - left);
       component.rect.setAttribute("height",
         Math.max(...component.bodies.map(b => b.y)) + nodeHeight / 2 + 24 - top);
-      component.title.setAttribute("x", left + 14);
+      component.icon.setAttribute("x", left + 14);
+      component.icon.setAttribute("y", top + 9);
+      component.title.setAttribute("x", left + 40);
       component.title.setAttribute("y", top + 25);
     }
     if (autoFit) {
@@ -552,14 +611,30 @@ function renderInfo() {
   const stack = (graph.stacks || []).find(stack => stack.id === selected);
   panel.hidden = !stack && node?.kind !== "service" && node?.kind !== "external";
   if (panel.hidden) return;
-  document.getElementById("node-info-title").textContent = stack ? stack.name : node.name;
+  const title = document.getElementById("node-info-title");
+  title.replaceChildren(
+    infoIconElement(stack?.icon || node?.icon || FALLBACK_ICON),
+    document.createTextNode(stack ? stack.name : node.name),
+  );
   const details = element("dl");
+  const stacksById = new Map((graph.stacks || []).map(item => [item.id, item]));
   const add = (label, values, color) => {
     details.append(element("dt", label, color ? `info-color ${color}` : undefined));
     const value = element("dd");
     if (Array.isArray(values) && values.length) {
       const list = element("ul");
-      for (const id of values) list.append(element("li", byId.get(id)?.name || id));
+      for (const id of values) {
+        const relatedNode = byId.get(id);
+        const relatedStack = stacksById.get(id);
+        const item = element("li");
+        const icon = infoIconElement(relatedNode?.icon || relatedStack?.icon || FALLBACK_ICON);
+        icon.classList.add("info-list-icon");
+        item.append(
+          icon,
+          element("span", relatedNode?.name || relatedStack?.name || id),
+        );
+        list.append(item);
+      }
       value.append(list);
     } else {
       value.textContent = Array.isArray(values) ? "None" : values;
@@ -584,7 +659,13 @@ function renderInfo() {
     add(`Affected services (${affected.length})`, affected, "impact");
   } else {
     add(node.kind === "external" ? "External ID" : "Service ID", node.id);
-    if (node.kind === "service") add("Stack", node.stack || "None");
+    if (node.kind === "service") {
+      add("Stack", node.stack || "None");
+      const hosts = [...new Set(graph.placement_edges
+        .filter(edge => edge.source === node.id).map(edge => edge.target))]
+        .sort((a, b) => byId.get(a).name.localeCompare(byId.get(b).name));
+      add("Swarm nodes", hosts.length ? hosts : "No running tasks", "swarm");
+    }
     add("Categories", node.categories);
     add("Depends on", node.depends_on, "dependency");
     add("Used by", node.used_by, "dependent");
@@ -652,8 +733,7 @@ async function refresh() {
   swarmFilter.disabled = true;
   error.hidden = true;
   try {
-    const url = swarmCheckbox.checked ? "/api/dependencies?include_swarm_nodes=true" : "/api/dependencies";
-    const response = await fetch(url, {cache: "no-store"});
+    const response = await fetch("/api/dependencies?include_swarm_nodes=true", {cache: "no-store"});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load dependencies.");
     graph = data;

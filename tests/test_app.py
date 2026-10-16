@@ -20,6 +20,44 @@ def service(name, labels=None, container_labels=None):
 
 
 class GraphTests(unittest.TestCase):
+    def test_stack_icon_uses_member_service_icon(self):
+        graph = app.build_graph([
+            service("media_radarr", {
+                "com.docker.stack.namespace": "media",
+                "doc.icon": "radarr",
+                "doc.depends_on": "",
+            }),
+            service("media_sonarr", {
+                "com.docker.stack.namespace": "media",
+                "doc.icon": "radarr",
+                "doc.depends_on": "",
+            }),
+        ])
+        stack = next(stack for stack in graph["stacks"] if stack["id"] == "stack:media")
+        self.assertEqual(stack["icon"], "radarr")
+
+    def test_stack_with_different_icons_prefers_published_service(self):
+        published = service("media_radarr", {
+            "com.docker.stack.namespace": "media",
+            "doc.icon": "radarr",
+            "doc.depends_on": "",
+        })
+        published["Endpoint"] = {"Ports": [{
+            "PublishedPort": 7878,
+            "TargetPort": 7878,
+            "Protocol": "tcp",
+        }]}
+        graph = app.build_graph([
+            service("media_sonarr", {
+                "com.docker.stack.namespace": "media",
+                "doc.icon": "sonarr",
+                "doc.depends_on": "",
+            }),
+            published,
+        ])
+        stack = next(stack for stack in graph["stacks"] if stack["id"] == "stack:media")
+        self.assertEqual(stack["icon"], "radarr")
+
     def test_stack_dependencies_propagate_member_failure_without_counting_stack(self):
         graph = app.build_graph([
             service("db", {"com.docker.stack.namespace": "backend", "doc.depends_on": ""}),
@@ -113,14 +151,94 @@ class GraphTests(unittest.TestCase):
             "a is used by missing, which is not a running service",
         ])
 
-    def test_used_by_container_label_and_empty_value(self):
+    def test_task_template_labels_are_not_used_as_service_metadata(self):
         graph = app.build_graph([
-            service("a", {"doc.depends_on": ""}, {"doc.used_by": "ext:homeassistant"}),
-            service("b", {"doc.depends_on": "", "doc.used_by": ""},
-                    {"doc.used_by": "ext:ignored"}),
+            service("a", {"doc.category": "service"},
+                    {"doc.category": "container", "doc.depends_on": ""}),
         ])
-        self.assertEqual(graph["edges"], [{"source": "ext:homeassistant", "target": "a"}])
-        self.assertEqual(graph["warnings"], [])
+        node = next(node for node in graph["nodes"] if node["id"] == "a")
+        self.assertEqual(node["category"], "service")
+        self.assertEqual(node["depends_on"], [])
+        self.assertEqual(graph["warnings"], ["a has no doc.depends_on label"])
+
+    def test_task_container_icons_use_common_icon_or_published_container_icon(self):
+        svc = service("media_player", {
+            "doc.icon": "service-icon",
+            "doc.depends_on": "",
+        })
+        svc["ID"] = "media-player-id"
+        svc["Endpoint"] = {"Ports": [{
+            "PublishedPort": 8080,
+            "TargetPort": 80,
+            "Protocol": "tcp",
+            "PublishMode": "host",
+        }]}
+        tasks = [
+            {
+                "ID": "a",
+                "ServiceID": "media-player-id",
+                "DesiredState": "running",
+                "Status": {
+                    "State": "running",
+                    "PortStatus": {"Ports": [{
+                        "PublishedPort": 8080,
+                        "TargetPort": 80,
+                        "Protocol": "tcp",
+                    }]},
+                },
+                "Spec": {"ContainerSpec": {"Labels": {"doc.icon": "radarr"}}},
+            },
+            {
+                "ID": "b",
+                "ServiceID": "media-player-id",
+                "DesiredState": "running",
+                "Status": {"State": "running", "PortStatus": {}},
+                "Spec": {"ContainerSpec": {"Labels": {"doc.icon": "plex"}}},
+            },
+            {
+                "ID": "old",
+                "ServiceID": "media-player-id",
+                "DesiredState": "shutdown",
+                "Status": {"State": "shutdown"},
+                "Spec": {"ContainerSpec": {"Labels": {"doc.icon": "bazarr"}}},
+            },
+        ]
+        task_containers = app.task_icon_containers([svc], tasks)
+        graph = app.build_graph([svc], task_containers=task_containers)
+        node = next(node for node in graph["nodes"] if node["id"] == "media_player")
+        self.assertEqual(node["icon"], "radarr")
+
+        for task in tasks[:2]:
+            task["Spec"]["ContainerSpec"]["Labels"]["doc.icon"] = "radarr"
+        task_containers = app.task_icon_containers([svc], tasks)
+        graph = app.build_graph([svc], task_containers=task_containers)
+        node = next(node for node in graph["nodes"] if node["id"] == "media_player")
+        self.assertEqual(node["icon"], "radarr")
+
+    def test_task_container_icon_falls_back_to_service_icon_without_published_choice(self):
+        graph = app.build_graph(
+            [service("media_player", {"doc.icon": "plex", "doc.depends_on": ""})],
+            task_containers=[
+                {
+                    "Id": "a",
+                    "Labels": {
+                        "com.docker.swarm.service.name": "media_player",
+                        "doc.icon": "radarr",
+                    },
+                    "Ports": [],
+                },
+                {
+                    "Id": "b",
+                    "Labels": {
+                        "com.docker.swarm.service.name": "media_player",
+                        "doc.icon": "bazarr",
+                    },
+                    "Ports": [],
+                },
+            ],
+        )
+        node = next(node for node in graph["nodes"] if node["id"] == "media_player")
+        self.assertEqual(node["icon"], "plex")
 
     def test_swarm_placements_use_running_tasks_and_preserve_impact(self):
         services = [
@@ -160,6 +278,18 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(manager["kind"], "swarm")
         self.assertNotIn("swarm_nodes", baseline)
         self.assertEqual(app.build_graph([], [], [])["placement_edges"], [])
+
+    def test_icon_slug_is_validated_with_docker_fallback(self):
+        graph = app.build_graph([
+            service("a", {"doc.icon": "radarr", "doc.depends_on": ""}),
+            service("b", {"doc.icon": "../evil\"x", "doc.depends_on": "ext:plex"}),
+            service("c", {"doc.depends_on": ""}),
+            service("d", {"doc.icon": "Radarr", "doc.depends_on": ""}),
+        ])
+        icons = {node["id"]: node["icon"] for node in graph["nodes"]}
+        self.assertEqual(icons, {
+            "a": "radarr", "b": "docker", "c": "docker", "d": "docker", "ext:plex": "docker",
+        })
 
     def test_multiple_categories(self):
         graph = app.build_graph([
@@ -244,7 +374,7 @@ class GraphTests(unittest.TestCase):
             {"source": "web", "target": "proxy"},
         ])
 
-    def test_container_labels_and_service_label_precedence(self):
+    def test_task_template_labels_do_not_override_service_labels(self):
         graph = app.build_graph([service(
             "your_spotify_web",
             {"doc.category": "service", "com.docker.stack.namespace": "your_spotify"},
@@ -253,7 +383,7 @@ class GraphTests(unittest.TestCase):
         node = graph["nodes"][0]
         self.assertEqual(node["category"], "service")
         self.assertEqual(node["name"], "your_spotify-web")
-        self.assertEqual(graph["warnings"], [])
+        self.assertEqual(graph["warnings"], ["your_spotify_web has no doc.depends_on label"])
 
     def test_short_names(self):
         for name, expected in [
@@ -297,7 +427,7 @@ class DockerTests(unittest.TestCase):
                 with patch.dict(os.environ, {"DOCKER_SOCKET": path}):
                     self.assertEqual(app.read_services(), [{"Spec": {"Name": "test"}}])
                     self.assertEqual(server.request_path, "/services")
-                    for endpoint in ("/nodes", "/tasks"):
+                    for endpoint in ("/containers/json", "/nodes", "/tasks"):
                         self.assertEqual(app.read_docker_list(endpoint), [{"Spec": {"Name": "test"}}])
                         self.assertEqual(server.request_path, endpoint)
                     DockerHandler.status = 503
@@ -348,18 +478,21 @@ class HTTPTests(unittest.TestCase):
                 self.assertIn(content_type, headers["Content-Type"])
                 self.assertEqual(int(headers["Content-Length"]), len(body))
                 self.assertIn("default-src 'self'", headers["Content-Security-Policy"])
+                self.assertIn("img-src 'self' https://cdn.jsdelivr.net",
+                              headers["Content-Security-Policy"])
                 self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(self.get("/../app.py")[0], 404)
 
     def test_api_refreshes_discovery(self):
         with patch.object(app, "read_services", return_value=[]) as discovery, \
-                patch.object(app, "read_docker_list") as extra_discovery:
+                patch.object(app, "read_docker_list", return_value=[]) as extra_discovery:
             for _ in range(2):
                 status, _, body = self.get("/api/dependencies")
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body)["nodes"], [])
             self.assertEqual(discovery.call_count, 2)
-            extra_discovery.assert_not_called()
+            self.assertEqual([call.args[0] for call in extra_discovery.call_args_list],
+                             ["/tasks", "/tasks"])
 
     def test_swarm_discovery_is_opt_in_and_refreshes(self):
         with patch.object(app, "read_services", return_value=[]), \
@@ -370,7 +503,7 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(json.loads(body)["swarm_nodes"], [])
                 self.assertEqual(json.loads(body)["placement_edges"], [])
             self.assertEqual([call.args[0] for call in discovery.call_args_list],
-                             ["/nodes", "/tasks", "/nodes", "/tasks"])
+                             ["/tasks", "/nodes", "/tasks", "/nodes"])
 
     def test_swarm_discovery_failure_is_explicit(self):
         with patch.object(app, "read_services", return_value=[]), \

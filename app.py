@@ -2,6 +2,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import socket
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -13,6 +14,111 @@ from urllib.parse import parse_qs, urlsplit
 STATIC = Path(__file__).parent / "static"
 TRAEFIK = os.environ.get("TRAEFIK_SERVICE", "traefik_traefik")
 AUTHENTIK = os.environ.get("AUTHENTIK_SERVICE", "authentik_server")
+ICON_SLUG = re.compile(r"^[a-z0-9-]+$")
+DEFAULT_ICON = "docker"
+ICON_CDN = "https://cdn.jsdelivr.net"
+
+
+def icon_slug(value):
+    return value if value and ICON_SLUG.fullmatch(value) else DEFAULT_ICON
+
+
+def container_has_published_port(container, service):
+    container_ports = container.get("Ports") or []
+    if any(port.get("PublicPort") for port in container_ports):
+        return True
+
+    published_targets = {
+        (port.get("TargetPort"), (port.get("Protocol") or "tcp").lower())
+        for port in ((service.get("Endpoint") or {}).get("Ports") or [])
+        if port.get("PublishedPort")
+    }
+    return any(
+        (port.get("PrivatePort"), (port.get("Type") or "tcp").lower())
+        in published_targets
+        for port in container_ports
+    )
+
+
+def task_icon_containers(services, tasks):
+    services_by_id = {
+        service["ID"]: service
+        for service in services
+        if service.get("ID")
+    }
+    containers = []
+    for task in tasks:
+        status = task.get("Status") or {}
+        if status.get("State") != "running" or task.get("DesiredState", "running") != "running":
+            continue
+        service = services_by_id.get(task.get("ServiceID"))
+        if service is None:
+            continue
+
+        container_spec = (task.get("Spec") or {}).get("ContainerSpec") or {}
+        labels = container_spec.get("Labels") or {}
+        service_name = service["Spec"]["Name"]
+        labels = {
+            **labels,
+            "com.docker.swarm.service.name": service_name,
+        }
+        ports = [
+            {
+                "PublicPort": port.get("PublishedPort"),
+                "PrivatePort": port.get("TargetPort"),
+                "Type": port.get("Protocol") or "tcp",
+            }
+            for port in ((status.get("PortStatus") or {}).get("Ports") or [])
+        ]
+        if not ports:
+            ports = [
+                {
+                    "PrivatePort": port.get("TargetPort"),
+                    "Type": port.get("Protocol") or "tcp",
+                }
+                for port in ((service.get("Endpoint") or {}).get("Ports") or [])
+                if port.get("PublishedPort") and port.get("PublishMode") == "ingress"
+            ]
+        containers.append({
+            "Id": task.get("ID", ""),
+            "Labels": labels,
+            "Ports": ports,
+        })
+    return containers
+
+
+def service_icon(service, task_containers):
+    spec = service["Spec"]
+    name = spec["Name"]
+    service_labels = spec.get("Labels") or {}
+    service_icon_slug = icon_slug(service_labels.get("doc.icon"))
+    members = []
+    for container in task_containers:
+        labels = container.get("Labels") or {}
+        if labels.get("com.docker.swarm.service.name") == name:
+            members.append((
+                icon_slug(labels.get("doc.icon", service_icon_slug)),
+                container_has_published_port(container, service),
+                container.get("Id", ""),
+            ))
+
+    if not members:
+        return service_icon_slug
+    icons = {icon for icon, _, _ in members}
+    if len(icons) == 1:
+        return next(iter(icons))
+    published = sorted(
+        (member for member in members if member[1]),
+        key=lambda member: (member[2], member[0]),
+    )
+    return published[0][0] if published else service_icon_slug
+
+
+def has_published_port(service):
+    return any(
+        port.get("PublishedPort")
+        for port in ((service.get("Endpoint") or {}).get("Ports") or [])
+    )
 
 
 class DockerConnection(http.client.HTTPConnection):
@@ -64,16 +170,12 @@ def short_name(name, labels):
     return f"{stack}-{service}"
 
 
-def build_graph(services, swarm_nodes=None, tasks=()):
-    labels = {}
-    for service in services:
-        spec = service["Spec"]
-        # Swarm supports both service labels and task container labels.
-        container = spec.get("TaskTemplate", {}).get("ContainerSpec", {})
-        labels[spec["Name"]] = {
-            **(container.get("Labels") or {}),
-            **(spec.get("Labels") or {}),
-        }
+def build_graph(services, swarm_nodes=None, tasks=(), task_containers=()):
+    services_by_name = {service["Spec"]["Name"]: service for service in services}
+    labels = {
+        name: service["Spec"].get("Labels") or {}
+        for name, service in services_by_name.items()
+    }
 
     stacks = defaultdict(list)
     for name, lab in labels.items():
@@ -139,6 +241,29 @@ def build_graph(services, swarm_nodes=None, tasks=()):
         for member in members:
             impact_used_by.setdefault(member, set()).add(stack)
 
+    service_icons = {
+        name: service_icon(service, task_containers)
+        for name, service in services_by_name.items()
+    }
+    stack_icons = {}
+    for stack, members in stacks.items():
+        candidates = sorted(
+            (
+                name,
+                service_icons[name],
+                has_published_port(services_by_name[name]),
+            )
+            for name in members
+        )
+        icons = {icon for _, icon, _ in candidates}
+        if len(icons) == 1:
+            stack_icons[stack] = next(iter(icons))
+        else:
+            published = [candidate for candidate in candidates if candidate[2]]
+            stack_icons[stack] = (
+                published[0][1] if published else candidates[0][1]
+            ) if candidates else DEFAULT_ICON
+
     def impact(target):
         seen = {target}
         queue = deque([target])
@@ -164,6 +289,7 @@ def build_graph(services, swarm_nodes=None, tasks=()):
         nodes.append({
             "id": name,
             "name": short_name(name, labels),
+            "icon": service_icons.get(name, stack_icons.get(name, DEFAULT_ICON)),
             "kind": kind,
             "stack": labels.get(name, {}).get("com.docker.stack.namespace"),
             "members": sorted(stacks.get(name, [])),
@@ -190,7 +316,12 @@ def build_graph(services, swarm_nodes=None, tasks=()):
         ],
         "warnings": warnings,
         "stacks": [
-            {"id": stack, "name": stack[6:], "members": sorted(members)}
+            {
+                "id": stack,
+                "name": stack[6:],
+                "members": sorted(members),
+                "icon": stack_icons[stack],
+            }
             for stack, members in sorted(stacks.items())
         ],
     }
@@ -208,6 +339,7 @@ def build_graph(services, swarm_nodes=None, tasks=()):
             "id": f"swarm-node:{node['ID']}",
             "name": node["Description"]["Hostname"],
             "kind": "swarm",
+            "icon": DEFAULT_ICON,
             "category": "Swarm node",
             "categories": ["Swarm node"],
             "role": node["Spec"]["Role"],
@@ -234,11 +366,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/dependencies":
             try:
                 services = read_services()
+                tasks = read_docker_list("/tasks")
+                task_containers = task_icon_containers(services, tasks)
                 include_swarm = parse_qs(urlsplit(self.path).query).get("include_swarm_nodes") == ["true"]
                 if include_swarm:
-                    data = build_graph(services, read_docker_list("/nodes"), read_docker_list("/tasks"))
+                    data = build_graph(
+                        services,
+                        read_docker_list("/nodes"),
+                        tasks,
+                        task_containers,
+                    )
                 else:
-                    data = build_graph(services)
+                    data = build_graph(
+                        services,
+                        tasks=tasks,
+                        task_containers=task_containers,
+                    )
             except (OSError, http.client.HTTPException, ValueError, KeyError,
                     TypeError, RuntimeError):
                 logging.exception("Cannot read Swarm discovery data")
@@ -247,6 +390,7 @@ class Handler(BaseHTTPRequestHandler):
                     json.dumps({
                         "error": "Cannot read Swarm services. Check that the Docker "
                         "socket is accessible and this application is on a Swarm manager. "
+                        "Task discovery requires access to /tasks. "
                         "When Show Swarm nodes is enabled, access to /nodes and /tasks "
                         "is also required."
                     }).encode(),
@@ -273,7 +417,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; object-src 'none'; "
+                         f"default-src 'self'; img-src 'self' {ICON_CDN}; object-src 'none'; "
                          "base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)

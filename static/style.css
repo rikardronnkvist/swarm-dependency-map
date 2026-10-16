@@ -15,16 +15,20 @@ input[type="search"] { width: 20rem; }
 #graph { flex: 1; min-height: 0; overflow: hidden; }
 #node-info { position: absolute; right: 1rem; bottom: 5rem; z-index: 2; width: min(24rem, calc(100% - 2rem)); max-height: calc(100% - 10rem); overflow: auto; padding: 1rem; background: #172033; border: 1px solid #60a5fa; border-radius: 10px; box-shadow: 0 8px 24px #0006; }
 #node-info h2 { margin: 0 4.5rem .75rem 0; font-size: 1rem; overflow-wrap: anywhere; }
+#node-info .info-icon { display: inline-block; width: 1.5rem; height: 1.5rem; margin-right: .5rem; vertical-align: middle; object-fit: contain; }
 #close-info { float: right; padding: .25rem .5rem; font-size: .8rem; }
 #node-info dl { margin: 0; font-size: .85rem; }
 #node-info dt { margin-top: .75rem; color: #94a3b8; }
 #node-info dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
 #node-info ul { margin: 0; padding-left: 1.25rem; }
+#node-info li { display: flex; align-items: center; gap: .4rem; }
+#node-info .info-list-icon { flex: 0 0 1rem; width: 1rem; height: 1rem; object-fit: contain; }
 #node-info .info-color::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .5rem; border-radius: 50%; background: var(--info-color); }
 #node-info .selected { --info-color: #7dd3fc; }
 #node-info .dependency { --info-color: #2dd4bf; }
 #node-info .dependent { --info-color: #f87171; }
 #node-info .transitive { --info-color: #fb923c; }
+#node-info .swarm { --info-color: #c084fc; }
 #node-info .impact::before { background: linear-gradient(90deg, #f87171 50%, #fb923c 50%); }
 #graph svg { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 .stack-group { cursor: grab; touch-action: none; user-select: none; }
