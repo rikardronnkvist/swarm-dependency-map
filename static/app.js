@@ -96,6 +96,40 @@ function select(id) {
   render();
 }
 
+// Columns read left to right: every component sits left of the components it depends on.
+function rankComponents(members) {
+  // Drop edges that close a cycle so ranks stay finite and other edges keep their direction.
+  const forward = new Map(members.map(component => [component, []]));
+  const state = new Map();
+  const visit = a => {
+    state.set(a, "open");
+    for (const b of a.dependsOn) {
+      if (!state.has(b)) visit(b);
+      if (state.get(b) === "done") forward.get(a).push(b);
+    }
+    state.set(a, "done");
+  };
+  for (const component of members) if (!state.has(component)) visit(component);
+  const rank = new Map(members.map(component => [component, 0]));
+  for (let pass = 0; pass < members.length; pass++) {
+    let changed = false;
+    for (const a of members) {
+      for (const b of forward.get(a)) {
+        if (rank.get(b) <= rank.get(a)) { rank.set(b, rank.get(a) + 1); changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  // Pull pure consumers next to their nearest dependency instead of the far left edge.
+  const used = new Set([...forward.values()].flat());
+  for (const component of members) {
+    const dependencies = forward.get(component);
+    if (used.has(component) || !dependencies.length) continue;
+    rank.set(component, Math.min(...dependencies.map(b => rank.get(b))) - 1);
+  }
+  return rank;
+}
+
 function renderGraph() {
   stopLayout();
   const root = document.getElementById("graph");
@@ -179,32 +213,109 @@ function renderGraph() {
     component.referenced = true;
   }
   const components = [...grouped.values()];
-  components.sort((a, b) => b.ids.length - a.ids.length);
   const gap = 140;
   for (const component of components) {
     component.width = Math.max(300, Math.sqrt(component.ids.length) * 260);
     component.height = Math.max(160, Math.sqrt(component.ids.length) * (nodeHeight + 65));
+    component.links = new Set();
+    component.dependsOn = new Set();
   }
-  const rowWidth = Math.max(1000, components[0].width,
-    Math.sqrt(components.reduce((area, c) => area + (c.width + gap) * (c.height + gap), 0) * 1.5));
+  const componentById = new Map(components.flatMap(c => c.ids.map(id => [id, c])));
+  for (const edge of edges) {
+    // Edges may target a stack whose members are visible, so fall back to the stack key.
+    const a = componentById.get(edge.source) || grouped.get(edge.source);
+    const b = componentById.get(edge.target) || grouped.get(edge.target);
+    if (!a || !b || a === b) continue;
+    a.links.add(b);
+    b.links.add(a);
+    a.dependsOn.add(b);
+  }
+  // Lay out each connected group of stacks separately, starting from its best-connected member.
+  const clusters = [];
+  const clustered = new Set();
+  const byLinks = [...components].sort((a, b) =>
+    b.links.size - a.links.size || b.ids.length - a.ids.length);
+  for (const start of byLinks) {
+    if (clustered.has(start)) continue;
+    const members = [start];
+    clustered.add(start);
+    for (let i = 0; i < members.length; i++) {
+      for (const next of members[i].links) {
+        if (!clustered.has(next)) { clustered.add(next); members.push(next); }
+      }
+    }
+    clusters.push(members);
+  }
+  for (const members of clusters) {
+    const rank = rankComponents(members);
+    const columns = [];
+    for (const component of members) {
+      const column = rank.get(component) - Math.min(...rank.values());
+      (columns[column] ||= []).push(component);
+    }
+    const stackColumn = column => {
+      let columnY = -(column.reduce((total, c) => total + c.height + gap / 2, 0) - gap / 2) / 2;
+      for (const component of column) {
+        component.y = columnY + component.height / 2;
+        columnY += component.height + gap / 2;
+      }
+    };
+    const filled = columns.filter(Boolean);
+    filled.forEach(stackColumn);
+    // Order each column by the average height of its neighbours to untangle crossing edges.
+    for (let sweep = 0; sweep < 8; sweep++) {
+      for (const column of filled) {
+        const target = new Map(column.map(c => [c, c.links.size
+          ? [...c.links].reduce((total, b) => total + b.y, 0) / c.links.size : c.y]));
+        column.sort((a, b) => target.get(a) - target.get(b));
+        stackColumn(column);
+      }
+    }
+    // Interleave tall columns into side-by-side columns so wide screens are used.
+    const area = members.reduce((total, c) => total + (c.width + gap) * (c.height + gap / 2), 0);
+    const maxHeight = Math.max(...members.map(c => c.height), Math.sqrt(area / 1.6));
+    let columnX = 0;
+    for (const column of filled) {
+      const height = column.reduce((total, c) => total + c.height + gap / 2, 0);
+      const count = Math.min(column.length, Math.ceil(height / maxHeight));
+      for (let part = 0; part < count; part++) {
+        const split = column.filter((_, index) => index % count === part);
+        const columnWidth = Math.max(...split.map(c => c.width));
+        stackColumn(split);
+        for (const component of split) component.x = columnX + columnWidth / 2;
+        columnX += columnWidth + gap;
+      }
+    }
+    members.left = Math.min(...members.map(c => c.x - c.width / 2));
+    members.top = Math.min(...members.map(c => c.y - c.height / 2));
+    members.width = Math.max(...members.map(c => c.x + c.width / 2)) - members.left;
+    members.height = Math.max(...members.map(c => c.y + c.height / 2)) - members.top;
+    members.size = members.reduce((total, c) => total + c.ids.length, 0);
+  }
+  // Connected groups come first; stacks without cross-stack dependencies trail at the end.
+  clusters.sort((a, b) => (a.length > 1 ? 0 : 1) - (b.length > 1 ? 0 : 1)
+    || b.size - a.size || b.width * b.height - a.width * a.height);
+  const rowWidth = Math.max(1000, ...clusters.map(cluster => cluster.width),
+    Math.sqrt(clusters.reduce((area, c) => area + (c.width + gap) * (c.height + gap), 0) * 1.5));
   let x = gap;
   let y = gap;
   let rowHeight = 0;
   let width = 1000;
-  for (const component of components) {
-    if (x > gap && x + component.width > rowWidth + gap) {
+  for (const cluster of clusters) {
+    if (x > gap && x + cluster.width > rowWidth + gap) {
       x = gap;
       y += rowHeight + gap;
       rowHeight = 0;
     }
-    component.x = x + component.width / 2;
-    component.y = y + component.height / 2;
-    x += component.width + gap;
-    rowHeight = Math.max(rowHeight, component.height);
+    for (const component of cluster) {
+      component.x += x - cluster.left;
+      component.y += y - cluster.top;
+    }
+    x += cluster.width + gap;
+    rowHeight = Math.max(rowHeight, cluster.height);
     width = Math.max(width, x);
   }
   const height = Math.max(650, y + rowHeight + gap);
-  const componentById = new Map(components.flatMap(c => c.ids.map(id => [id, c])));
   const svg = svgElement("svg", {
     viewBox: `0 0 ${width} ${height}`, role: "group",
     "aria-label": "Service dependencies. Drag nodes to rearrange. Scroll to zoom.",
