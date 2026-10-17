@@ -184,13 +184,17 @@ function renderGraph() {
     component.width = Math.max(300, Math.sqrt(component.ids.length) * 260);
     component.height = Math.max(160, Math.sqrt(component.ids.length) * (nodeHeight + 65));
     component.links = new Set();
+    component.dependsOn = new Set();
   }
   const componentById = new Map(components.flatMap(c => c.ids.map(id => [id, c])));
   for (const edge of edges) {
     // Edges may target a stack whose members are visible, so fall back to the stack key.
     const a = componentById.get(edge.source) || grouped.get(edge.source);
     const b = componentById.get(edge.target) || grouped.get(edge.target);
-    if (a && b && a !== b) { a.links.add(b); b.links.add(a); }
+    if (!a || !b || a === b) continue;
+    a.links.add(b);
+    b.links.add(a);
+    a.dependsOn.add(b);
   }
   // Lay out each connected group of stacks separately, starting from its best-connected member.
   const clusters = [];
@@ -209,38 +213,59 @@ function renderGraph() {
     clusters.push(members);
   }
   for (const members of clusters) {
-    members.forEach((component, index) => {
-      const angle = index * Math.PI * (3 - Math.sqrt(5));
-      const radius = Math.sqrt(index) * 320;
-      component.x = Math.cos(angle) * radius;
-      component.y = Math.sin(angle) * radius;
-    });
-    for (let step = 0; step < 300 && members.length > 1; step++) {
-      const cooling = 1 - step / 300;
+    // Columns read left to right: every stack sits left of the stacks it depends on.
+    const rank = new Map(members.map(component => [component, 0]));
+    for (let pass = 0; pass < members.length; pass++) {
+      let changed = false;
       for (const a of members) {
-        for (const b of a.links) {
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const distance = Math.hypot(dx, dy) || 1;
-          const force = (distance - (a.width + b.width) / 2 - gap) * .05 * cooling;
-          a.x += dx / distance * force;
-          a.y += dy / distance * force;
+        for (const b of a.dependsOn) {
+          if (rank.get(b) <= rank.get(a)) { rank.set(b, rank.get(a) + 1); changed = true; }
         }
       }
-      for (let i = 0; i < members.length; i++) {
-        for (let j = i + 1; j < members.length; j++) {
-          const a = members[i];
-          const b = members[j];
-          const dx = b.x - a.x || .01;
-          const dy = b.y - a.y || .01;
-          const overlapX = (a.width + b.width) / 2 + gap - Math.abs(dx);
-          const overlapY = (a.height + b.height) / 2 + gap - Math.abs(dy);
-          if (overlapX <= 0 || overlapY <= 0) continue;
-          const axis = overlapX < overlapY ? "x" : "y";
-          const offset = (axis === "x" ? Math.sign(dx) * overlapX : Math.sign(dy) * overlapY) / 2;
-          a[axis] -= offset;
-          b[axis] += offset;
-        }
+      if (!changed) break;
+    }
+    // Pull pure consumers next to their nearest dependency instead of the far left edge.
+    const used = new Set(members.flatMap(component => [...component.dependsOn]));
+    for (const component of members) {
+      if (used.has(component) || !component.dependsOn.size) continue;
+      rank.set(component, Math.min(...[...component.dependsOn].map(b => rank.get(b))) - 1);
+    }
+    const columns = [];
+    for (const component of members) {
+      const column = rank.get(component) - Math.min(...rank.values());
+      (columns[column] ||= []).push(component);
+    }
+    const stackColumn = column => {
+      let columnY = -(column.reduce((total, c) => total + c.height + gap / 2, 0) - gap / 2) / 2;
+      for (const component of column) {
+        component.y = columnY + component.height / 2;
+        columnY += component.height + gap / 2;
+      }
+    };
+    const filled = columns.filter(Boolean);
+    filled.forEach(stackColumn);
+    // Order each column by the average height of its neighbours to untangle crossing edges.
+    for (let sweep = 0; sweep < 8; sweep++) {
+      for (const column of filled) {
+        const target = new Map(column.map(c => [c, c.links.size
+          ? [...c.links].reduce((total, b) => total + b.y, 0) / c.links.size : c.y]));
+        column.sort((a, b) => target.get(a) - target.get(b));
+        stackColumn(column);
+      }
+    }
+    // Interleave tall columns into side-by-side columns so wide screens are used.
+    const area = members.reduce((total, c) => total + (c.width + gap) * (c.height + gap / 2), 0);
+    const maxHeight = Math.max(...members.map(c => c.height), Math.sqrt(area / 1.6));
+    let columnX = 0;
+    for (const column of filled) {
+      const height = column.reduce((total, c) => total + c.height + gap / 2, 0);
+      const count = Math.min(column.length, Math.ceil(height / maxHeight));
+      for (let part = 0; part < count; part++) {
+        const split = column.filter((_, index) => index % count === part);
+        const columnWidth = Math.max(...split.map(c => c.width));
+        stackColumn(split);
+        for (const component of split) component.x = columnX + columnWidth / 2;
+        columnX += columnWidth + gap;
       }
     }
     members.left = Math.min(...members.map(c => c.x - c.width / 2));
