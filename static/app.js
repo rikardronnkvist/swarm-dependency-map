@@ -179,32 +179,100 @@ function renderGraph() {
     component.referenced = true;
   }
   const components = [...grouped.values()];
-  components.sort((a, b) => b.ids.length - a.ids.length);
   const gap = 140;
   for (const component of components) {
     component.width = Math.max(300, Math.sqrt(component.ids.length) * 260);
     component.height = Math.max(160, Math.sqrt(component.ids.length) * (nodeHeight + 65));
+    component.links = new Set();
   }
-  const rowWidth = Math.max(1000, components[0].width,
-    Math.sqrt(components.reduce((area, c) => area + (c.width + gap) * (c.height + gap), 0) * 1.5));
+  const componentById = new Map(components.flatMap(c => c.ids.map(id => [id, c])));
+  for (const edge of edges) {
+    // Edges may target a stack whose members are visible, so fall back to the stack key.
+    const a = componentById.get(edge.source) || grouped.get(edge.source);
+    const b = componentById.get(edge.target) || grouped.get(edge.target);
+    if (a && b && a !== b) { a.links.add(b); b.links.add(a); }
+  }
+  // Lay out each connected group of stacks separately, starting from its best-connected member.
+  const clusters = [];
+  const clustered = new Set();
+  const byLinks = [...components].sort((a, b) =>
+    b.links.size - a.links.size || b.ids.length - a.ids.length);
+  for (const start of byLinks) {
+    if (clustered.has(start)) continue;
+    const members = [start];
+    clustered.add(start);
+    for (let i = 0; i < members.length; i++) {
+      for (const next of members[i].links) {
+        if (!clustered.has(next)) { clustered.add(next); members.push(next); }
+      }
+    }
+    clusters.push(members);
+  }
+  for (const members of clusters) {
+    members.forEach((component, index) => {
+      const angle = index * Math.PI * (3 - Math.sqrt(5));
+      const radius = Math.sqrt(index) * 320;
+      component.x = Math.cos(angle) * radius;
+      component.y = Math.sin(angle) * radius;
+    });
+    for (let step = 0; step < 300 && members.length > 1; step++) {
+      const cooling = 1 - step / 300;
+      for (const a of members) {
+        for (const b of a.links) {
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const distance = Math.hypot(dx, dy) || 1;
+          const force = (distance - (a.width + b.width) / 2 - gap) * .05 * cooling;
+          a.x += dx / distance * force;
+          a.y += dy / distance * force;
+        }
+      }
+      for (let i = 0; i < members.length; i++) {
+        for (let j = i + 1; j < members.length; j++) {
+          const a = members[i];
+          const b = members[j];
+          const dx = b.x - a.x || .01;
+          const dy = b.y - a.y || .01;
+          const overlapX = (a.width + b.width) / 2 + gap - Math.abs(dx);
+          const overlapY = (a.height + b.height) / 2 + gap - Math.abs(dy);
+          if (overlapX <= 0 || overlapY <= 0) continue;
+          const axis = overlapX < overlapY ? "x" : "y";
+          const offset = (axis === "x" ? Math.sign(dx) * overlapX : Math.sign(dy) * overlapY) / 2;
+          a[axis] -= offset;
+          b[axis] += offset;
+        }
+      }
+    }
+    members.left = Math.min(...members.map(c => c.x - c.width / 2));
+    members.top = Math.min(...members.map(c => c.y - c.height / 2));
+    members.width = Math.max(...members.map(c => c.x + c.width / 2)) - members.left;
+    members.height = Math.max(...members.map(c => c.y + c.height / 2)) - members.top;
+    members.size = members.reduce((total, c) => total + c.ids.length, 0);
+  }
+  // Connected groups come first; stacks without cross-stack dependencies trail at the end.
+  clusters.sort((a, b) => (a.length > 1 ? 0 : 1) - (b.length > 1 ? 0 : 1)
+    || b.size - a.size || b.width * b.height - a.width * a.height);
+  const rowWidth = Math.max(1000, ...clusters.map(cluster => cluster.width),
+    Math.sqrt(clusters.reduce((area, c) => area + (c.width + gap) * (c.height + gap), 0) * 1.5));
   let x = gap;
   let y = gap;
   let rowHeight = 0;
   let width = 1000;
-  for (const component of components) {
-    if (x > gap && x + component.width > rowWidth + gap) {
+  for (const cluster of clusters) {
+    if (x > gap && x + cluster.width > rowWidth + gap) {
       x = gap;
       y += rowHeight + gap;
       rowHeight = 0;
     }
-    component.x = x + component.width / 2;
-    component.y = y + component.height / 2;
-    x += component.width + gap;
-    rowHeight = Math.max(rowHeight, component.height);
+    for (const component of cluster) {
+      component.x += x - cluster.left;
+      component.y += y - cluster.top;
+    }
+    x += cluster.width + gap;
+    rowHeight = Math.max(rowHeight, cluster.height);
     width = Math.max(width, x);
   }
   const height = Math.max(650, y + rowHeight + gap);
-  const componentById = new Map(components.flatMap(c => c.ids.map(id => [id, c])));
   const svg = svgElement("svg", {
     viewBox: `0 0 ${width} ${height}`, role: "group",
     "aria-label": "Service dependencies. Drag nodes to rearrange. Scroll to zoom.",
