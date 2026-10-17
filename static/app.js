@@ -96,6 +96,40 @@ function select(id) {
   render();
 }
 
+// Columns read left to right: every component sits left of the components it depends on.
+function rankComponents(members) {
+  // Drop edges that close a cycle so ranks stay finite and other edges keep their direction.
+  const forward = new Map(members.map(component => [component, []]));
+  const state = new Map();
+  const visit = a => {
+    state.set(a, "open");
+    for (const b of a.dependsOn) {
+      if (!state.has(b)) visit(b);
+      if (state.get(b) === "done") forward.get(a).push(b);
+    }
+    state.set(a, "done");
+  };
+  for (const component of members) if (!state.has(component)) visit(component);
+  const rank = new Map(members.map(component => [component, 0]));
+  for (let pass = 0; pass < members.length; pass++) {
+    let changed = false;
+    for (const a of members) {
+      for (const b of forward.get(a)) {
+        if (rank.get(b) <= rank.get(a)) { rank.set(b, rank.get(a) + 1); changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  // Pull pure consumers next to their nearest dependency instead of the far left edge.
+  const used = new Set([...forward.values()].flat());
+  for (const component of members) {
+    const dependencies = forward.get(component);
+    if (used.has(component) || !dependencies.length) continue;
+    rank.set(component, Math.min(...dependencies.map(b => rank.get(b))) - 1);
+  }
+  return rank;
+}
+
 function renderGraph() {
   stopLayout();
   const root = document.getElementById("graph");
@@ -213,23 +247,7 @@ function renderGraph() {
     clusters.push(members);
   }
   for (const members of clusters) {
-    // Columns read left to right: every stack sits left of the stacks it depends on.
-    const rank = new Map(members.map(component => [component, 0]));
-    for (let pass = 0; pass < members.length; pass++) {
-      let changed = false;
-      for (const a of members) {
-        for (const b of a.dependsOn) {
-          if (rank.get(b) <= rank.get(a)) { rank.set(b, rank.get(a) + 1); changed = true; }
-        }
-      }
-      if (!changed) break;
-    }
-    // Pull pure consumers next to their nearest dependency instead of the far left edge.
-    const used = new Set(members.flatMap(component => [...component.dependsOn]));
-    for (const component of members) {
-      if (used.has(component) || !component.dependsOn.size) continue;
-      rank.set(component, Math.min(...[...component.dependsOn].map(b => rank.get(b))) - 1);
-    }
+    const rank = rankComponents(members);
     const columns = [];
     for (const component of members) {
       const column = rank.get(component) - Math.min(...rank.values());
