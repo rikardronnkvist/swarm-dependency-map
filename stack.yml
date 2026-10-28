@@ -16,7 +16,11 @@ services:
       placement:
         constraints:
           - node.role == manager
-    labels:
-      doc.category: infrastructure
-      doc.depends_on: ""
-      doc.icon: "https://swarm-dependency-map.example.com/apple-touch-icon.png"
+      labels:
+        - "doc.category=infrastructure"
+        - "doc.depends_on="
+        - "doc.icon=https://swarm-dependency-map.example.com/apple-touch-icon.png"
+
+        - "traefik.enable=true"
+        - "traefik.http.routers.swarm-dependency-map.rule=Host(`swarm-dependency-map.example.com`)"
+        - "traefik.http.services.swarm-dependency-map.loadbalancer.server.port=8080"

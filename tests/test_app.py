@@ -264,7 +264,7 @@ class GraphTests(unittest.TestCase):
         tasks.append({"ServiceID": "web-id", "Status": {"State": "pending"}})
         baseline = app.build_graph(services)
         graph = app.build_graph(services, swarm_nodes, tasks)
-        for key in ("nodes", "edges", "implicit_edges", "warnings", "service_count"):
+        for key in ("nodes", "edges", "warnings", "service_count"):
             self.assertEqual(graph[key], baseline[key])
         self.assertEqual(graph["placement_edges"], [
             {"source": "db", "target": "swarm-node:n2"},
@@ -422,26 +422,6 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(nodes["b"]["used_by"], ["a", "c"])
         self.assertEqual(nodes["b"]["transitive_impact"], [])
 
-    def test_implicit_edges_are_separate_from_explicit_impact(self):
-        with patch.object(app, "TRAEFIK", "proxy"), patch.object(app, "AUTHENTIK", "auth"):
-            graph = app.build_graph([
-                service("web", {
-                    "doc.depends_on": "",
-                    "traefik.enable": "true",
-                    "traefik.http.routers.web.middlewares": "AUTHENTIK@file",
-                }),
-                service("proxy", {"doc.depends_on": "", "traefik.enable": "true"}),
-            ])
-        nodes = {node["id"]: node for node in graph["nodes"]}
-        self.assertEqual(nodes["proxy"]["implicit_used_by"], ["web"])
-        self.assertEqual(nodes["auth"]["implicit_used_by"], ["web"])
-        self.assertEqual(nodes["proxy"]["impact_count"], 0)
-        self.assertEqual(graph["edges"], [])
-        self.assertEqual(graph["implicit_edges"], [
-            {"source": "web", "target": "auth"},
-            {"source": "web", "target": "proxy"},
-        ])
-
     def test_task_template_labels_do_not_override_service_labels(self):
         graph = app.build_graph([service(
             "your_spotify_web",
@@ -467,7 +447,7 @@ class GraphTests(unittest.TestCase):
     def test_empty_swarm(self):
         graph = app.build_graph([])
         self.assertEqual(graph["service_count"], 0)
-        for key in ("nodes", "edges", "implicit_edges", "warnings"):
+        for key in ("nodes", "edges", "warnings"):
             self.assertEqual(graph[key], [])
 
 

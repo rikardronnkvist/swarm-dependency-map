@@ -12,8 +12,6 @@ from urllib.parse import parse_qs, urlsplit
 
 
 STATIC = Path(__file__).parent / "static"
-TRAEFIK = os.environ.get("TRAEFIK_SERVICE", "traefik_traefik")
-AUTHENTIK = os.environ.get("AUTHENTIK_SERVICE", "authentik_server")
 ICON_SLUG = re.compile(r"^[a-z0-9-]+$")
 ICON_URL = re.compile(
     r"https://(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+"
@@ -198,9 +196,7 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
             stacks[f"stack:{stack}"].append(name)
 
     dependencies = {}
-    implicit = {}
     used_by = defaultdict(set)
-    implicit_used_by = defaultdict(set)
     warnings = []
     for name, lab in sorted(labels.items()):
         raw = lab.get("doc.depends_on")
@@ -218,19 +214,6 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
                 warnings.append(
                     f"{name} depends on {dependency}, which is not a running service"
                 )
-
-        derived = set()
-        if lab.get("traefik.enable") == "true" and name != TRAEFIK:
-            derived.add(TRAEFIK)
-        if any(
-            "authentik" in value.lower()
-            for key, value in lab.items()
-            if key.startswith("traefik.") and "middlewares" in key
-        ):
-            derived.add(AUTHENTIK)
-        implicit[name] = sorted(derived)
-        for dependency in derived:
-            implicit_used_by[dependency].add(name)
 
     for name, lab in sorted(labels.items()):
         dependents = sorted({
@@ -289,7 +272,7 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
         return seen - {target} - set(stacks)
 
     nodes = []
-    targets = set(labels) | set(dependencies) | set(used_by) | set(implicit_used_by)
+    targets = set(labels) | set(dependencies) | set(used_by)
     for name in sorted(targets):
         direct = used_by.get(name, set()) - {name} - set(stacks)
         affected = impact(name)
@@ -317,7 +300,6 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
             "used_by": sorted(direct),
             "transitive_impact": sorted(affected - direct),
             "impact_count": len(affected),
-            "implicit_used_by": sorted(implicit_used_by.get(name, ())),
         })
 
     graph = {
@@ -327,10 +309,6 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
         "edges": [
             {"source": name, "target": target}
             for name, targets in sorted(dependencies.items()) for target in targets
-        ],
-        "implicit_edges": [
-            {"source": name, "target": target}
-            for name, targets in sorted(implicit.items()) for target in targets
         ],
         "warnings": warnings,
         "stacks": [
@@ -375,7 +353,6 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
         "depends_on": [],
         "used_by": [],
         "transitive_impact": [],
-        "implicit_used_by": [],
         "impact_count": 0,
     } for network_id in sorted(attached_network_ids)]
     graph["network_edges"] = [
@@ -405,7 +382,6 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
             "depends_on": [],
             "used_by": [],
             "transitive_impact": [],
-            "implicit_used_by": [],
             "impact_count": 0,
         } for node in sorted(swarm_nodes, key=lambda node: node["ID"])]
         graph["placement_edges"] = [
