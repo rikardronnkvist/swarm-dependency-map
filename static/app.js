@@ -151,7 +151,7 @@ function renderGraph() {
     .filter(edge => edge.target === swarmNode).map(edge => edge.source));
   const nodes = graph.nodes
     .filter(node => node.kind !== "stack")
-    .filter(node => !hiddenNodes.has(node.id))
+    .filter(node => !isHidden(node))
     .filter(node => node.id === selected || node.kind === "service" || connectedIds.has(node.id))
     .filter(node => node.id === selected || showNonDependant || connectedIds.has(node.id))
     .filter(node => node.id === selected || !category || node.categories.includes(category))
@@ -163,19 +163,23 @@ function renderGraph() {
       && !hiddenNodes.has(edge.target)) : [];
   const visibleNetworkIds = new Set(networkEdges.map(edge => edge.target));
   nodes.push(...(graph.networks || []).filter(node => visibleNetworkIds.has(node.id)
-    && !hiddenNodes.has(node.id)));
+    && !isHidden(node)));
   const referencedStacks = new Set(graph.edges
     .filter(edge => serviceIds.has(edge.source) || serviceIds.has(edge.target))
     .flatMap(edge => [edge.source, edge.target]));
-  const stackTargets = graph.nodes.filter(node => node.kind === "stack" && referencedStacks.has(node.id));
+  const stackTargets = graph.nodes.filter(node => node.kind === "stack"
+    && referencedStacks.has(node.id) && !hiddenNodes.has(node.id));
   // Empty, filtered stacks still need a layout anchor, but never a service card.
   nodes.push(...stackTargets.filter(stack => !nodes.some(node => node.stack === stack.name)));
   const placements = showSwarm
-    ? (graph.placement_edges || []).filter(edge => serviceIds.has(edge.source)) : [];
+    ? (graph.placement_edges || []).filter(edge => serviceIds.has(edge.source)
+      && !hiddenNodes.has(edge.target)) : [];
   const hostIds = new Set(placements.map(edge => edge.target));
   if (showSwarm) {
     nodes.push(...(graph.swarm_nodes || []).filter(node =>
-      swarmNode ? node.id === swarmNode || hostIds.has(node.id) : !category || hostIds.has(node.id)));
+      !isHidden(node) && (swarmNode
+        ? node.id === swarmNode || hostIds.has(node.id)
+        : !category || hostIds.has(node.id))));
   }
   if (!nodes.length) {
     selected = null;
@@ -748,14 +752,19 @@ function matches(node, query) {
     .some(value => value.toLowerCase().includes(query));
 }
 
+function isHidden(node) {
+  return hiddenNodes.has(node.id) || Boolean(node.stack && hiddenNodes.has(`stack:${node.stack}`));
+}
+
 function renderInfo() {
   const panel = document.getElementById("node-info");
   const node = byId.get(selected);
   const stack = (graph.stacks || []).find(stack => stack.id === selected);
   const hideButton = document.getElementById("hide-node");
-  panel.hidden = !stack && !["service", "external", "network"].includes(node?.kind);
+  panel.hidden = !stack
+    && !["service", "external", "missing", "network", "swarm"].includes(node?.kind);
   if (panel.hidden) return;
-  hideButton.hidden = Boolean(stack) || !node;
+  hideButton.hidden = false;
   const title = document.getElementById("node-info-title");
   title.replaceChildren(
     infoIconElement(stack?.icon || node?.icon || FALLBACK_ICON),
@@ -805,8 +814,11 @@ function renderInfo() {
     }
     details.append(value);
   };
-  add("Type", stack ? "Stack" : node.kind === "external" ? "External"
-    : node.kind === "network" ? "Network" : "Service");
+  const typeNames = {
+    external: "External", missing: "Missing target", network: "Network",
+    service: "Service", swarm: "Swarm node",
+  };
+  add("Type", stack ? "Stack" : typeNames[node.kind] || "Object");
   if (stack) {
     add(`Services (${stack.members.length})`, stack.members, "dependency");
     const memberIds = new Set([stack.id, ...stack.members]);
@@ -824,11 +836,20 @@ function renderInfo() {
     add(`Affected services (${affected.length})`, affected, "impact");
   } else {
     add(node.kind === "network" ? "Network ID"
-      : node.kind === "external" ? "External ID" : "Service ID", node.id);
+      : node.kind === "swarm" ? "Swarm node ID"
+        : node.kind === "external" ? "External ID"
+          : node.kind === "missing" ? "Missing target ID" : "Service ID", node.id);
     if (node.kind === "network") {
       add("Driver", node.driver);
       add("Scope", node.scope);
       add("Connected services", (graph.network_edges || [])
+        .filter(edge => edge.target === node.id).map(edge => edge.source).sort());
+    }
+    if (node.kind === "swarm") {
+      add("Role", node.role);
+      add("State", node.state);
+      add("Availability", node.availability);
+      add("Hosted services", (graph.placement_edges || [])
         .filter(edge => edge.target === node.id).map(edge => edge.source).sort());
     }
     if (node.kind === "service") {
@@ -949,9 +970,19 @@ async function refresh() {
 
 document.getElementById("close-info").addEventListener("click", () => select(null));
 document.getElementById("hide-node").addEventListener("click", () => {
-  if (!selected || !byId.has(selected)) return;
-  hiddenNodes.add(selected);
-  positions.delete(selected);
+  if (!selected) return;
+  const stack = (graph?.stacks || []).find(item => item.id === selected);
+  const node = byId.get(selected);
+  if (!stack && !node) return;
+  const hiddenIds = stack
+    ? [stack.id, ...stack.members,
+      ...(graph.networks || []).filter(network => network.stack === stack.name)
+        .map(network => network.id)]
+    : [selected];
+  for (const id of hiddenIds) {
+    hiddenNodes.add(id);
+    positions.delete(id);
+  }
   selected = null;
   updateFilters();
 });

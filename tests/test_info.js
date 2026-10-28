@@ -45,6 +45,7 @@ test("info category click applies filter without selecting a same-named service"
     updateFilters = () => { renderedSelection = selected; };
     renderInfo();
   `, context);
+  assert.equal(elements.get("hide-node").hidden, false);
   const details = elements.get("node-info-content").children[0];
   const labelIndex = details.children.findIndex(child => child.textContent === "Categories");
   const list = details.children[labelIndex + 1].children[0];
@@ -64,4 +65,16 @@ test("info category click applies filter without selecting a same-named service"
   assert.equal(vm.runInContext('hiddenNodes.has("web")', context), true);
   assert.equal(vm.runInContext("selected", context), null);
   assert.equal(vm.runInContext("renderedSelection", context), null);
+
+  vm.runInContext(`
+    const stack = {id: "stack:media", name: "media", members: ["web"], icon: "docker"};
+    graph.stacks = [stack];
+    graph.edges = [];
+    selected = stack.id;
+    renderInfo();
+  `, context);
+  assert.equal(elements.get("hide-node").hidden, false);
+  elements.get("hide-node").listeners.click();
+  assert.equal(vm.runInContext('hiddenNodes.has("stack:media")', context), true);
+  assert.equal(vm.runInContext('hiddenNodes.has("web")', context), true);
 });
