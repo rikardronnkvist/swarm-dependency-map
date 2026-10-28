@@ -36,16 +36,16 @@ services:
 ## Examples
 
 | Label | Example Value | Effect |
-| -------------- |-------------|------|
-| doc.depends_on | semaphore_semaphore | Dependency to the service Semaphore in the Semaphore-stack |
-| doc.depends_on | stack:authentik | Dependency to the Authentik stack |
-| doc.depends_on | ext:pushover | Dependency to the external service Pushover |
-| doc.depends_on | stack:authentik,ext:pushover | Dependency to the Authentick stack and the external service Pushover |
-| doc.used_by | ext:home-assistant | Dependency **from** the external service Home Assistant |
-| doc.category | YourChoice | Allows filtering in the UI |
-| doc.category | Multiple,Categories | Allows filtering in the UI |
-| doc.icon | semaphore      | Will show icon from [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons) |
-| doc.icon | https://x.y/icon.png | Will show icon from https://x.y/icon.png (important to use https) |
+| --- |---|---|
+| `doc.depends_on` | `semaphore_semaphore` | Dependency to the service Semaphore in the Semaphore-stack |
+| `doc.depends_on` | `stack:authentik` | Dependency to the Authentik stack |
+| `doc.depends_on` | `ext:pushover` | Dependency to the external service Pushover |
+| `doc.depends_on` | `stack:authentik,ext:pushover` | Dependency to the Authentick stack and the external service Pushover |
+| `doc.used_by` | `ext:home-assistant` | Dependency **from** the external service Home Assistant |
+| `doc.category` | `YourChoice` | Allows filtering in the UI |
+| `doc.category` | `Multiple,Categories` | Allows filtering in the UI |
+| `doc.icon` | `semaphore` | Will show icon from [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons) |
+| `doc.icon` | `https://x.y/icon.png` | Will show icon from https://x.y/icon.png (important to use https) |
 
 
 ## Run on a Swarm manager
