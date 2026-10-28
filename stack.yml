@@ -19,3 +19,4 @@ services:
     labels:
       doc.category: infrastructure
       doc.depends_on: ""
+      doc.icon: "https://swarm-dependency-map.example.com/apple-touch-icon.png"
