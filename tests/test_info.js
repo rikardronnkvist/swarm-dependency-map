@@ -60,4 +60,8 @@ test("info category click applies filter without selecting a same-named service"
   const updatedIndex = updated.children.findIndex(child => child.textContent === "Categories");
   assert.equal(updated.children[updatedIndex + 1].children[0].children[0]
     .children[0]["aria-pressed"], "true");
+  elements.get("hide-node").listeners.click();
+  assert.equal(vm.runInContext('hiddenNodes.has("web")', context), true);
+  assert.equal(vm.runInContext("selected", context), null);
+  assert.equal(vm.runInContext("renderedSelection", context), null);
 });

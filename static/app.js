@@ -2,6 +2,7 @@
 
 let graph = null;
 let selected = null;
+const hiddenNodes = new Set();
 const byId = new Map();
 const positions = new Map();
 let stopLayout = () => {};
@@ -150,6 +151,7 @@ function renderGraph() {
     .filter(edge => edge.target === swarmNode).map(edge => edge.source));
   const nodes = graph.nodes
     .filter(node => node.kind !== "stack")
+    .filter(node => !hiddenNodes.has(node.id))
     .filter(node => node.id === selected || node.kind === "service" || connectedIds.has(node.id))
     .filter(node => node.id === selected || showNonDependant || connectedIds.has(node.id))
     .filter(node => node.id === selected || !category || node.categories.includes(category))
@@ -157,9 +159,11 @@ function renderGraph() {
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const serviceIds = new Set(nodes.map(node => node.id));
   const networkEdges = showNetworks
-    ? (graph.network_edges || []).filter(edge => serviceIds.has(edge.source)) : [];
+    ? (graph.network_edges || []).filter(edge => serviceIds.has(edge.source)
+      && !hiddenNodes.has(edge.target)) : [];
   const visibleNetworkIds = new Set(networkEdges.map(edge => edge.target));
-  nodes.push(...(graph.networks || []).filter(node => visibleNetworkIds.has(node.id)));
+  nodes.push(...(graph.networks || []).filter(node => visibleNetworkIds.has(node.id)
+    && !hiddenNodes.has(node.id)));
   const referencedStacks = new Set(graph.edges
     .filter(edge => serviceIds.has(edge.source) || serviceIds.has(edge.target))
     .flatMap(edge => [edge.source, edge.target]));
@@ -748,8 +752,10 @@ function renderInfo() {
   const panel = document.getElementById("node-info");
   const node = byId.get(selected);
   const stack = (graph.stacks || []).find(stack => stack.id === selected);
+  const hideButton = document.getElementById("hide-node");
   panel.hidden = !stack && !["service", "external", "network"].includes(node?.kind);
   if (panel.hidden) return;
+  hideButton.hidden = Boolean(stack) || !node;
   const title = document.getElementById("node-info-title");
   title.replaceChildren(
     infoIconElement(stack?.icon || node?.icon || FALLBACK_ICON),
@@ -942,6 +948,13 @@ async function refresh() {
 }
 
 document.getElementById("close-info").addEventListener("click", () => select(null));
+document.getElementById("hide-node").addEventListener("click", () => {
+  if (!selected || !byId.has(selected)) return;
+  hiddenNodes.add(selected);
+  positions.delete(selected);
+  selected = null;
+  updateFilters();
+});
 document.getElementById("search").addEventListener("input", render);
 function updateFilters() {
   if (!graph) return;
