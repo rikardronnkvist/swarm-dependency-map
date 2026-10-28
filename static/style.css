@@ -49,6 +49,8 @@ input[type="search"] { width: 20rem; }
 .edge.placement.active { opacity: 1; stroke-width: 2.5; }
 .edge.placement.secondary { stroke: #82709e; opacity: .3; }
 .edge.placement.secondary.active { stroke: #aa96c5; opacity: .65; }
+.edge.network { stroke: #34d399; stroke-dasharray: 3 4; opacity: .7; }
+.edge.network.active { stroke: #6ee7b7; stroke-width: 2.5; opacity: 1; }
 .node { cursor: grab; touch-action: none; user-select: none; }
 .node.dragging { cursor: grabbing; }
 .node .node-body { fill: #1e293b; stroke: #64748b; stroke-width: 2; }
@@ -60,6 +62,7 @@ input[type="search"] { width: 20rem; }
 .node.swarm .node-body { fill: #2e1065; stroke: #c084fc; }
 .node.hosted:not(.dependent):not(.dependency) .node-body { fill: #3b0764; stroke: #d8b4fe; }
 .node.swarm.secondary .node-body { fill: #251d38; stroke: #75618f; }
+.node.network .node-body { fill: #123b35; stroke: #34d399; stroke-dasharray: 5 3; }
 .node.swarm.secondary text { fill: #b2a3c7; }
 .node.selected .node-body, .node:focus-visible .node-body { stroke: #38bdf8; stroke-width: 3; }
 .node.dependent .node-body { fill: #7f1d1d; stroke: #f87171; }

@@ -118,7 +118,8 @@ must match on eligible managers, or constrain deployment to a suitable node.
 **Security:** Docker socket access is effectively host-administrator access,
 even when the socket is mounted `:ro`; that flag does not make the Docker API
 read-only. The web UI issues discovery requests that read `GET /services`,
-`GET /nodes`, and `GET /tasks`, including when **Show Swarm nodes** is disabled.
+`GET /nodes`, `GET /tasks`, and `GET /networks`, including when **Show Swarm nodes**
+is disabled.
 Deploy it only in a trusted environment.
 A restricted Docker socket proxy allowing these read endpoints is preferable
 where available. The web UI/API have no built-in authentication
@@ -177,6 +178,10 @@ published port before exposing it beyond your trusted network.
   Category and standalone-service filters still apply to services; with a category
   selected, only hosts running visible services are shown. Without a category,
   all Swarm hosts are shown, including idle hosts.
+- **Show networks** is unchecked by default. Enable it to show networks attached
+  to visible services, with dashed green links. Selecting a network shows its
+  driver, scope, and connected services. Network links do not affect dependency
+  impact.
 - The **Swarm node** dropdown is enabled with **Show Swarm nodes**. Select a host
   to show only services with running tasks there. Other hosts running those same
   services remain visible with muted cards and hosting links; unrelated services
@@ -210,7 +215,8 @@ failures return HTTP 503 with an actionable message; details go to server logs.
 queried by the default API request without the query parameter. The web UI always
 requests this expanded topology so service information can list hosts even when
 their cards are hidden. Page load and changes to **Show Swarm nodes** re-read all
-three resources. Discovery failures
+three resources. All API requests also read `/networks` for the optional network
+view. Discovery failures
 are explicit; no partial topology is returned.
 
 Configuration via environment variables:

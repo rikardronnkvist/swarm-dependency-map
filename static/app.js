@@ -142,6 +142,7 @@ function renderGraph() {
     }
   }
   const showNonDependant = document.getElementById("show-non-dependant").checked;
+  const showNetworks = document.getElementById("show-networks").checked;
   const category = document.getElementById("category").value;
   const showSwarm = document.getElementById("show-swarm-nodes").checked;
   const swarmNode = showSwarm ? document.getElementById("swarm-node").value : "";
@@ -155,6 +156,10 @@ function renderGraph() {
     .filter(node => node.id === selected || !swarmNode || hostedServices.has(node.id))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const serviceIds = new Set(nodes.map(node => node.id));
+  const networkEdges = showNetworks
+    ? (graph.network_edges || []).filter(edge => serviceIds.has(edge.source)) : [];
+  const visibleNetworkIds = new Set(networkEdges.map(edge => edge.target));
+  nodes.push(...(graph.networks || []).filter(node => visibleNetworkIds.has(node.id)));
   const referencedStacks = new Set(graph.edges
     .filter(edge => serviceIds.has(edge.source) || serviceIds.has(edge.target))
     .flatMap(edge => [edge.source, edge.target]));
@@ -198,6 +203,7 @@ function renderGraph() {
   for (const stack of stackTargets) visibleIds.add(stack.id);
   const edges = [
     ...graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+    ...networkEdges.map(edge => ({...edge, kind: "network"})),
     ...placements.map(edge => ({...edge, kind: "placement"})),
   ];
   const stackById = new Map((graph.stacks || []).map(stack => [stack.id, stack]));
@@ -425,14 +431,17 @@ function renderGraph() {
     const to = positions.get(edge.target);
     const path = svgElement("path", {
       class: edge.kind === "placement"
-        ? `edge placement${swarmNode && edge.target !== swarmNode ? " secondary" : ""}` : "edge",
-      ...(edge.kind === "placement" ? {} : {"marker-end": "url(#arrow)"}),
+        ? `edge placement${swarmNode && edge.target !== swarmNode ? " secondary" : ""}`
+        : edge.kind === "network" ? "edge network" : "edge",
+      ...(["placement", "network"].includes(edge.kind) ? {} : {"marker-end": "url(#arrow)"}),
       "data-source": edge.source, "data-target": edge.target,
     });
     const title = svgElement("title");
     title.textContent = edge.kind === "placement"
       ? `${edge.source} runs on ${byId.get(edge.target).name}`
-      : `${edge.source} → ${edge.target}`;
+      : edge.kind === "network"
+        ? `${edge.source} is connected to ${byId.get(edge.target).name}`
+        : `${edge.source} → ${edge.target}`;
     path.append(title);
     svg.append(path);
     const fromStack = stackComponent(edge.source);
@@ -738,7 +747,7 @@ function renderInfo() {
   const panel = document.getElementById("node-info");
   const node = byId.get(selected);
   const stack = (graph.stacks || []).find(stack => stack.id === selected);
-  panel.hidden = !stack && node?.kind !== "service" && node?.kind !== "external";
+  panel.hidden = !stack && !["service", "external", "network"].includes(node?.kind);
   if (panel.hidden) return;
   const title = document.getElementById("node-info-title");
   title.replaceChildren(
@@ -789,7 +798,8 @@ function renderInfo() {
     }
     details.append(value);
   };
-  add("Type", stack ? "Stack" : node.kind === "external" ? "External" : "Service");
+  add("Type", stack ? "Stack" : node.kind === "external" ? "External"
+    : node.kind === "network" ? "Network" : "Service");
   if (stack) {
     add(`Services (${stack.members.length})`, stack.members, "dependency");
     const memberIds = new Set([stack.id, ...stack.members]);
@@ -806,7 +816,14 @@ function renderInfo() {
     add("Depends on", dependencies, "dependency");
     add(`Affected services (${affected.length})`, affected, "impact");
   } else {
-    add(node.kind === "external" ? "External ID" : "Service ID", node.id);
+    add(node.kind === "network" ? "Network ID"
+      : node.kind === "external" ? "External ID" : "Service ID", node.id);
+    if (node.kind === "network") {
+      add("Driver", node.driver);
+      add("Scope", node.scope);
+      add("Connected services", (graph.network_edges || [])
+        .filter(edge => edge.target === node.id).map(edge => edge.source).sort());
+    }
     if (node.kind === "service") {
       add("Stack", node.stack || "None");
       const hosts = [...new Set(graph.placement_edges
@@ -884,7 +901,9 @@ async function refresh() {
     if (!response.ok) throw new Error(data.error || "Could not load dependencies.");
     graph = data;
     byId.clear();
-    for (const node of [...graph.nodes, ...(graph.swarm_nodes || [])]) byId.set(node.id, node);
+    for (const node of [...graph.nodes, ...(graph.networks || []), ...(graph.swarm_nodes || [])]) {
+      byId.set(node.id, node);
+    }
     const previousSwarmNode = swarmFilter.value;
     const allNodes = element("option", "All nodes");
     allNodes.value = "";
@@ -929,6 +948,7 @@ function updateFilters() {
   render();
 }
 document.getElementById("show-non-dependant").addEventListener("change", updateFilters);
+document.getElementById("show-networks").addEventListener("change", updateFilters);
 document.getElementById("show-swarm-nodes").addEventListener("change", () => {
   stopLayout();
   positions.clear();

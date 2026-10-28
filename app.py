@@ -184,7 +184,7 @@ def short_name(name, labels):
     return f"{stack}-{service}"
 
 
-def build_graph(services, swarm_nodes=None, tasks=(), task_containers=()):
+def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networks=()):
     services_by_name = {service["Spec"]["Name"]: service for service in services}
     labels = {
         name: service["Spec"].get("Labels") or {}
@@ -343,6 +343,34 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=()):
             for stack, members in sorted(stacks.items())
         ],
     }
+    networks_by_id = {network["Id"]: network for network in networks if network.get("Id")}
+    network_attachments = sorted({
+        (service["Spec"]["Name"], target)
+        for service in services
+        for attachment in ((service.get("Spec") or {}).get("TaskTemplate") or {}).get("Networks") or []
+        for target in [attachment.get("Target")]
+        if target in networks_by_id
+    })
+    attached_network_ids = {target for _, target in network_attachments}
+    graph["networks"] = [{
+        "id": f"network:{network_id}",
+        "name": networks_by_id[network_id].get("Name", network_id),
+        "kind": "network",
+        "icon": DEFAULT_ICON,
+        "category": "Network",
+        "categories": ["Network"],
+        "driver": networks_by_id[network_id].get("Driver", "unknown"),
+        "scope": networks_by_id[network_id].get("Scope", "unknown"),
+        "depends_on": [],
+        "used_by": [],
+        "transitive_impact": [],
+        "implicit_used_by": [],
+        "impact_count": 0,
+    } for network_id in sorted(attached_network_ids)]
+    graph["network_edges"] = [
+        {"source": service, "target": f"network:{target}"}
+        for service, target in network_attachments
+    ]
     if swarm_nodes is not None:
         service_names = {service["ID"]: service["Spec"]["Name"] for service in services}
         node_ids = {node["ID"] for node in swarm_nodes}
@@ -385,6 +413,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 services = read_services()
                 tasks = read_docker_list("/tasks")
+                networks = read_docker_list("/networks")
                 task_containers = task_icon_containers(services, tasks)
                 include_swarm = parse_qs(urlsplit(self.path).query).get("include_swarm_nodes") == ["true"]
                 if include_swarm:
@@ -393,12 +422,14 @@ class Handler(BaseHTTPRequestHandler):
                         read_docker_list("/nodes"),
                         tasks,
                         task_containers,
+                        networks,
                     )
                 else:
                     data = build_graph(
                         services,
                         tasks=tasks,
                         task_containers=task_containers,
+                        networks=networks,
                     )
             except (OSError, http.client.HTTPException, ValueError, KeyError,
                     TypeError, RuntimeError):
@@ -408,9 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                     json.dumps({
                         "error": "Cannot read Swarm services. Check that the Docker "
                         "socket is accessible and this application is on a Swarm manager. "
-                        "Task discovery requires access to /tasks. "
-                        "When Show Swarm nodes is enabled, access to /nodes and /tasks "
-                        "is also required."
+                        "Discovery requires access to /tasks and /networks. "
+                        "When Show Swarm nodes is enabled, access to /nodes is "
+                        "also required."
                     }).encode(),
                     "application/json",
                 )

@@ -279,6 +279,30 @@ class GraphTests(unittest.TestCase):
         self.assertNotIn("swarm_nodes", baseline)
         self.assertEqual(app.build_graph([], [], [])["placement_edges"], [])
 
+    def test_networks_include_only_networks_attached_to_services(self):
+        web = service("web", {"doc.depends_on": ""})
+        web["Spec"]["TaskTemplate"] = {"Networks": [
+            {"Target": "net-a"}, {"Target": "net-b"},
+        ]}
+        db = service("db", {"doc.depends_on": ""})
+        db["Spec"]["TaskTemplate"] = {"Networks": [{"Target": "net-a"}]}
+        networks = [
+            {"Id": "net-a", "Name": "backend", "Driver": "overlay", "Scope": "swarm"},
+            {"Id": "net-b", "Name": "frontend", "Driver": "overlay", "Scope": "swarm"},
+            {"Id": "unused", "Name": "unused", "Driver": "bridge", "Scope": "local"},
+        ]
+
+        graph = app.build_graph([web, db], networks=networks)
+
+        self.assertEqual([(node["id"], node["name"]) for node in graph["networks"]], [
+            ("network:net-a", "backend"), ("network:net-b", "frontend"),
+        ])
+        self.assertEqual(graph["network_edges"], [
+            {"source": "db", "target": "network:net-a"},
+            {"source": "web", "target": "network:net-a"},
+            {"source": "web", "target": "network:net-b"},
+        ])
+
     def test_icon_slug_is_validated_with_docker_fallback(self):
         graph = app.build_graph([
             service("a", {"doc.icon": "radarr", "doc.depends_on": ""}),
@@ -535,7 +559,7 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(json.loads(body)["nodes"], [])
             self.assertEqual(discovery.call_count, 2)
             self.assertEqual([call.args[0] for call in extra_discovery.call_args_list],
-                             ["/tasks", "/tasks"])
+                             ["/tasks", "/networks", "/tasks", "/networks"])
 
     def test_swarm_discovery_is_opt_in_and_refreshes(self):
         with patch.object(app, "read_services", return_value=[]), \
@@ -546,7 +570,7 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(json.loads(body)["swarm_nodes"], [])
                 self.assertEqual(json.loads(body)["placement_edges"], [])
             self.assertEqual([call.args[0] for call in discovery.call_args_list],
-                             ["/tasks", "/nodes", "/tasks", "/nodes"])
+                             ["/tasks", "/networks", "/nodes", "/tasks", "/networks", "/nodes"])
 
     def test_swarm_discovery_failure_is_explicit(self):
         with patch.object(app, "read_services", return_value=[]), \
@@ -554,7 +578,8 @@ class HTTPTests(unittest.TestCase):
             with self.assertLogs(level="ERROR"):
                 status, _, body = self.get("/api/dependencies?include_swarm_nodes=true")
         self.assertEqual(status, 503)
-        self.assertIn("/nodes and /tasks", json.loads(body)["error"])
+        self.assertIn("/tasks and /networks", json.loads(body)["error"])
+        self.assertIn("/nodes", json.loads(body)["error"])
         self.assertNotIn("private details", body.decode())
 
     def test_unavailable_docker_is_a_safe_actionable_error(self):
