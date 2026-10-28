@@ -280,11 +280,15 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(app.build_graph([], [], [])["placement_edges"], [])
 
     def test_networks_include_only_networks_attached_to_services(self):
-        web = service("web", {"doc.depends_on": ""})
+        web = service("web", {
+            "com.docker.stack.namespace": "media", "doc.depends_on": "",
+        })
         web["Spec"]["TaskTemplate"] = {"Networks": [
             {"Target": "net-a"}, {"Target": "net-b"},
         ]}
-        db = service("db", {"doc.depends_on": ""})
+        db = service("db", {
+            "com.docker.stack.namespace": "infra", "doc.depends_on": "",
+        })
         db["Spec"]["TaskTemplate"] = {"Networks": [{"Target": "net-a"}]}
         networks = [
             {"Id": "net-a", "Name": "backend", "Driver": "overlay", "Scope": "swarm"},
@@ -297,6 +301,10 @@ class GraphTests(unittest.TestCase):
         self.assertEqual([(node["id"], node["name"]) for node in graph["networks"]], [
             ("network:net-a", "backend"), ("network:net-b", "frontend"),
         ])
+        network_stacks = {node["id"]: node["stack"] for node in graph["networks"]}
+        self.assertEqual(network_stacks, {
+            "network:net-a": None, "network:net-b": "media",
+        })
         self.assertEqual(graph["network_edges"], [
             {"source": "db", "target": "network:net-a"},
             {"source": "web", "target": "network:net-a"},

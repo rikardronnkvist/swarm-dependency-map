@@ -352,10 +352,21 @@ def build_graph(services, swarm_nodes=None, tasks=(), task_containers=(), networ
         if target in networks_by_id
     })
     attached_network_ids = {target for _, target in network_attachments}
+    network_stacks = defaultdict(set)
+    for service_name, network_id in network_attachments:
+        network_stacks[network_id].add(
+            labels.get(service_name, {}).get("com.docker.stack.namespace") or None
+        )
+    exclusive_network_stacks = {
+        network_id: next(iter(stack_names))
+        for network_id, stack_names in network_stacks.items()
+        if len(stack_names) == 1 and None not in stack_names
+    }
     graph["networks"] = [{
         "id": f"network:{network_id}",
         "name": networks_by_id[network_id].get("Name", network_id),
         "kind": "network",
+        "stack": exclusive_network_stacks.get(network_id),
         "icon": DEFAULT_ICON,
         "category": "Network",
         "categories": ["Network"],

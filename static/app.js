@@ -339,7 +339,8 @@ function renderGraph() {
   defs.append(activeMarker);
   svg.append(defs);
   for (const component of components) {
-    if (!component.stack || (component.stack.members.length < 2 && !component.referenced)) continue;
+    if (!component.stack || (component.stack.members.length < 2 && !component.referenced
+      && !component.ids.some(id => byId.get(id)?.kind === "network"))) continue;
     const outline = svgElement("g", {class: "stack-group", "data-stack": component.stack.id});
     component.rect = svgElement("rect", {rx: 14});
     component.title = svgElement("text");
@@ -407,7 +408,7 @@ function renderGraph() {
     svg.append(outline);
   }
   if (!visibleIds.has(selected) && !components.some(component =>
-    component.stack?.id === selected && component.stack.members.length > 1)) selected = null;
+    component.stack?.id === selected && component.rect)) selected = null;
   for (const id of positions.keys()) {
     if (!byId.has(id)) positions.delete(id);
   }
